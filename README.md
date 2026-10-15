@@ -3,7 +3,6 @@
 > Dự án mô phỏng mạng xã hội **Threads (Meta)** phiên bản Web với trải nghiệm tương tác thời gian thực, giao diện chuẩn Pixel-Perfect, tối ưu hóa hiệu năng, xử lý đồng bộ đa màn hình và giải quyết các hạn chế của hệ thống backend.
 
 - **Live Demo:** [https://k20-react-threads-clone.vercel.app](https://k20-react-threads-clone.vercel.app)
-- **Repository:** [https://github.com/SonCryptoz/F8_K20-HomeWork](https://github.com/SonCryptoz/F8_K20-HomeWork)
 
 ---
 
@@ -111,7 +110,7 @@ src/
 
 1. **Clone mã nguồn:**
     ```bash
-    git clone https://github.com/SonCryptoz/F8_K20-HomeWork.git
+    git clone https://github.com/SonCryptoz/k20-react-threads-clone.git
     cd k20-react-threads-clone
     ```
 2. **Cài đặt dependencies:**
