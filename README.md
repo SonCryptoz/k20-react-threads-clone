@@ -1,4 +1,4 @@
-# K20 React Threads Clone - F8 Fullstack Web Project
+# K20 React Threads Clone - F8 React Practice
 
 > Dự án mô phỏng mạng xã hội **Threads (Meta)** phiên bản Web với trải nghiệm tương tác thời gian thực, giao diện chuẩn Pixel-Perfect, tối ưu hóa hiệu năng, xử lý đồng bộ đa màn hình và giải quyết các hạn chế của hệ thống backend.
 
