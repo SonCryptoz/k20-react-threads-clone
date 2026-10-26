@@ -63,6 +63,7 @@ const ProfileContent = () => {
         // Cuộn & Refs
         cardRef,
         contentRef,
+        spacerRef,
         spacerHeight,
         handleCardScroll,
 
@@ -182,79 +183,83 @@ const ProfileContent = () => {
 
                             {/* 4. Nội dung theo tab đã chọn */}
                             <div className="w-full">
-                                {isOwner && activeTab === "suggestions" ? (
-                                    <ProfileSuggestionsTab onFollowChange={handleFollowChange} />
-                                ) : (
-                                    <>
-                                        {/* Trạng thái tải bài viết */}
-                                        {isLoadingPosts && <FeedSkeletonList count={3} />}
-
-                                        {/* Trạng thái lỗi */}
-                                        {!isLoadingPosts && postsError && (
-                                            <div className="p-8 text-center flex flex-col items-center justify-center">
-                                                <p className="text-sm text-rose-500 mb-3">{postsError}</p>
-                                                <Button
-                                                    type="button"
-                                                    variant="outline"
-                                                    onClick={handleReloadPosts}
-                                                    className="rounded-xl gap-2 cursor-pointer"
-                                                >
-                                                    <RefreshCw className="w-4 h-4" />
-                                                    {t("post.reload")}
-                                                </Button>
-                                            </div>
-                                        )}
-
-                                        {/* Trạng thái trống */}
-                                        {!isLoadingPosts && !postsError && posts.length === 0 && (
-                                            <div className="py-16 text-center text-sm text-neutral-400 dark:text-neutral-500">
-                                                {activeTab === "reposts"
-                                                    ? t("profile.no_reposts") || "Chưa có bài đăng lại nào"
-                                                    : t("profile.no_threads") || "Chưa có cuộc trò chuyện nào"}
-                                            </div>
-                                        )}
-
-                                        {/* Danh sách bài viết */}
-                                        {!isLoadingPosts &&
-                                            posts.map((post) => (
-                                                <PostCard
-                                                    key={post.id}
-                                                    post={post}
-                                                    onLike={likePost}
-                                                    onComment={openReplyModal}
-                                                    onRepost={repostPost}
-                                                    onQuote={openQuoteModal}
-                                                    onCopyLink={copyPostLink}
-                                                    onShare={openCopyImageModal}
-                                                    onCopyAsImage={openCopyImageModal}
-                                                    onGetEmbedCode={openEmbedModal}
-                                                    onDelete={deletePost}
-                                                    onEdit={editPost}
-                                                    onHide={hidePost}
-                                                    onSave={savePost}
-                                                    onBlock={blockUser}
-                                                    onFollow={followUser}
-                                                />
-                                            ))}
-
-                                        {/* Vùng Sentinel theo dõi cuộn chạm đáy để tải thêm (Infinite Scroll) */}
-                                        {posts.length > 0 && (
-                                            <div
-                                                ref={hasMore ? lastElementRef : null}
-                                                className="w-full py-6 flex items-center justify-center"
-                                            >
-                                                {isLoadingMore && (
-                                                    <Loader2 className="w-5 h-5 animate-spin text-neutral-400" />
-                                                )}
-                                                {!hasMore && !isLoadingPosts && (
-                                                    <span className="text-xs text-neutral-400 dark:text-neutral-600 select-none">
-                                                        {t("post.watched_all")}
-                                                    </span>
-                                                )}
-                                            </div>
-                                        )}
-                                    </>
+                                {/* Tab Gợi ý theo dõi dành cho chủ tài khoản (giữ nguyên DOM, không unmount khi chuyển tab) */}
+                                {isOwner && (
+                                    <div className={activeTab === "suggestions" ? "block" : "hidden"}>
+                                        <ProfileSuggestionsTab onFollowChange={handleFollowChange} />
+                                    </div>
                                 )}
+
+                                {/* Danh sách bài viết (threads, reposts) */}
+                                <div className={activeTab === "suggestions" ? "hidden" : "block"}>
+                                    {/* Trạng thái tải bài viết */}
+                                    {isLoadingPosts && <FeedSkeletonList count={3} />}
+
+                                    {/* Trạng thái lỗi */}
+                                    {!isLoadingPosts && postsError && (
+                                        <div className="p-8 text-center flex flex-col items-center justify-center">
+                                            <p className="text-sm text-rose-500 mb-3">{postsError}</p>
+                                            <Button
+                                                type="button"
+                                                variant="outline"
+                                                onClick={handleReloadPosts}
+                                                className="rounded-xl gap-2 cursor-pointer"
+                                            >
+                                                <RefreshCw className="w-4 h-4" />
+                                                {t("post.reload")}
+                                            </Button>
+                                        </div>
+                                    )}
+
+                                    {/* Trạng thái trống */}
+                                    {!isLoadingPosts && !postsError && posts.length === 0 && (
+                                        <div className="py-16 text-center text-sm text-neutral-400 dark:text-neutral-500">
+                                            {activeTab === "reposts"
+                                                ? t("profile.no_reposts") || "Chưa có bài đăng lại nào"
+                                                : t("profile.no_threads") || "Chưa có cuộc trò chuyện nào"}
+                                        </div>
+                                    )}
+
+                                    {/* Danh sách bài viết */}
+                                    {!isLoadingPosts &&
+                                        posts.map((post) => (
+                                            <PostCard
+                                                key={post.id}
+                                                post={post}
+                                                onLike={likePost}
+                                                onComment={openReplyModal}
+                                                onRepost={repostPost}
+                                                onQuote={openQuoteModal}
+                                                onCopyLink={copyPostLink}
+                                                onShare={openCopyImageModal}
+                                                onCopyAsImage={openCopyImageModal}
+                                                onGetEmbedCode={openEmbedModal}
+                                                onDelete={deletePost}
+                                                onEdit={editPost}
+                                                onHide={hidePost}
+                                                onSave={savePost}
+                                                onBlock={blockUser}
+                                                onFollow={followUser}
+                                            />
+                                        ))}
+
+                                    {/* Vùng Sentinel theo dõi cuộn chạm đáy để tải thêm (Infinite Scroll) */}
+                                    {posts.length > 0 && (
+                                        <div
+                                            ref={hasMore ? lastElementRef : null}
+                                            className="w-full py-6 flex items-center justify-center"
+                                        >
+                                            {isLoadingMore && (
+                                                <Loader2 className="w-5 h-5 animate-spin text-neutral-400" />
+                                            )}
+                                            {!hasMore && !isLoadingPosts && (
+                                                <span className="text-xs text-neutral-400 dark:text-neutral-600 select-none">
+                                                    {t("post.watched_all")}
+                                                </span>
+                                            )}
+                                        </div>
+                                    )}
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -349,6 +354,7 @@ const ProfileContent = () => {
 
             {/* Spacer bù chiều cao ngoài trang, tạo thanh cuộn trang chính xác 1:1 trên Desktop */}
             <div
+                ref={spacerRef}
                 aria-hidden="true"
                 style={{ height: `${spacerHeight}px` }}
                 className="hidden md:block w-full pointer-events-none"

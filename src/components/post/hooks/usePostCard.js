@@ -175,15 +175,64 @@ export const usePostCard = ({ post, isDetail = false, onFollow }) => {
         lazyQuotedPost,
     ]);
 
-    // Xác định trạng thái is_liked và is_reposted chính xác từ displayPost và post
-    const isLiked = Boolean(
-        displayPost?.is_liked ||
-        displayPost?.is_liked_by_auth ||
-        post?.is_liked ||
-        post?.is_liked_by_auth
-    );
+    // Đồng bộ lại UI thẻ bài viết tức thì khi nhận được sự kiện tương tác toàn cục
+    const targetPostId = String(displayPost?.id || post?.id || "");
+    const [, setInteractionTick] = useState(0);
+
+    useEffect(() => {
+        if (!targetPostId) return;
+        const handleInteractionUpdated = (e) => {
+            const updatedId = e.detail?.postId;
+            if (updatedId && updatedId === targetPostId) {
+                setInteractionTick((tick) => tick + 1);
+            }
+        };
+        window.addEventListener("post:interaction_updated", handleInteractionUpdated);
+        return () => {
+            window.removeEventListener("post:interaction_updated", handleInteractionUpdated);
+        };
+    }, [targetPostId]);
+
+    // Lấy thông tin tương tác mới nhất từ single source of truth (userCache)
+    const cachedInteraction = userCache.getPostInteraction(targetPostId);
+
+    // Xác định trạng thái is_liked và is_reposted chính xác từ cachedInteraction, displayPost và post
+    const isLiked = (() => {
+        if (cachedInteraction) {
+            if (cachedInteraction.is_liked_by_auth !== undefined) {
+                return Boolean(cachedInteraction.is_liked_by_auth);
+            }
+            if (cachedInteraction.is_liked !== undefined) {
+                return Boolean(cachedInteraction.is_liked);
+            }
+        }
+        if (isRepost) {
+            if (displayPost?.is_liked_by_auth !== undefined) {
+                return Boolean(displayPost.is_liked_by_auth);
+            }
+            if (displayPost?.is_liked !== undefined) {
+                return Boolean(displayPost.is_liked);
+            }
+            if (post?.is_liked_by_auth !== undefined) {
+                return Boolean(post.is_liked_by_auth);
+            }
+            return Boolean(post?.is_liked);
+        }
+        if (post?.is_liked_by_auth !== undefined) {
+            return Boolean(post.is_liked_by_auth);
+        }
+        return Boolean(post?.is_liked);
+    })();
 
     const isReposted = (() => {
+        if (cachedInteraction) {
+            if (cachedInteraction.is_reposted_by_auth !== undefined) {
+                return Boolean(cachedInteraction.is_reposted_by_auth);
+            }
+            if (cachedInteraction.is_reposted !== undefined) {
+                return Boolean(cachedInteraction.is_reposted);
+            }
+        }
         if (isRepost) {
             if (isCurrentUserReposter) {
                 // Chính currentUser là người repost bài này (ví dụ trong tab Reposts của chính mình):
@@ -214,6 +263,26 @@ export const usePostCard = ({ post, isDetail = false, onFollow }) => {
         );
     })();
 
+    const effectiveLikesCount = Math.max(
+        0,
+        cachedInteraction?.likes_count !== undefined
+            ? cachedInteraction.likes_count
+            : (displayPost?.likes_count ?? post?.likes_count ?? 0),
+    );
+
+    const effectiveRepostsAndQuotesCount = Math.max(
+        0,
+        cachedInteraction?.reposts_and_quotes_count !== undefined
+            ? cachedInteraction.reposts_and_quotes_count
+            : cachedInteraction?.reposts_count !== undefined
+              ? cachedInteraction.reposts_count
+              : (displayPost?.reposts_and_quotes_count ??
+                 displayPost?.reposts_count ??
+                 post?.reposts_and_quotes_count ??
+                 post?.reposts_count ??
+                 0),
+    );
+
     // Bài viết hiệu dụng được chuẩn hóa để truyền cho InteractionBar và PostMenu (bảo toàn ID bài gốc và repost_record_id)
     const effectivePost = isRepost
         ? {
@@ -222,16 +291,9 @@ export const usePostCard = ({ post, isDetail = false, onFollow }) => {
               // Lưu ID của bản ghi repost để khi hủy repost thì gọi đúng endpoint hoặc xóa đúng thẻ
               repost_record_id: isCurrentUserReposter ? post.id : undefined,
               user: author,
-              likes_count: displayPost.likes_count ?? post.likes_count ?? 0,
+              likes_count: effectiveLikesCount,
               replies_count: displayPost.replies_count ?? post.replies_count ?? 0,
-              reposts_and_quotes_count: Math.max(
-                  0,
-                  displayPost.reposts_and_quotes_count ??
-                      displayPost.reposts_count ??
-                      post.reposts_and_quotes_count ??
-                      post.reposts_count ??
-                      0
-              ),
+              reposts_and_quotes_count: effectiveRepostsAndQuotesCount,
               is_liked: isLiked,
               is_liked_by_auth: isLiked,
               is_reposted: isReposted,
@@ -239,6 +301,9 @@ export const usePostCard = ({ post, isDetail = false, onFollow }) => {
           }
         : {
               ...post,
+              likes_count: effectiveLikesCount,
+              replies_count: post?.replies_count ?? 0,
+              reposts_and_quotes_count: effectiveRepostsAndQuotesCount,
               is_liked: isLiked,
               is_liked_by_auth: isLiked,
               is_reposted: isReposted,

@@ -61,6 +61,7 @@ const PostDetailPage = () => {
         handleBack,
         cardRef,
         contentRef,
+        spacerRef,
         spacerHeight,
         handleCardScroll,
         lastElementRef,
@@ -275,6 +276,7 @@ const PostDetailPage = () => {
 
             {/* Spacer bù chiều cao ngoài trang, tạo thanh cuộn trang chính xác 1:1 trên Desktop */}
             <div
+                ref={spacerRef}
                 aria-hidden="true"
                 style={{ height: `${spacerHeight}px` }}
                 className="hidden md:block w-full pointer-events-none"

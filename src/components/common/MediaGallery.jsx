@@ -1,4 +1,5 @@
 import { cn } from "cn";
+import { useImagePreview } from "@/hooks/useImagePreview";
 
 /**
  * MediaGallery
@@ -10,6 +11,7 @@ import { cn } from "cn";
  * - >4 ảnh: Grid 2x2 kèm huy hiệu "+N" ở góc thứ 4
  * - Hỗ trợ prop compact: Thu nhỏ chiều cao dành cho bài trích dẫn (Quoted Post) và các modal
  * - Hỗ trợ crossOrigin: Cần thiết cho html-to-image khi xuất ảnh bài viết
+ * - Tự động tích hợp Modal xem trước ảnh toàn màn hình (ImagePreviewModal) khi click vào ảnh
  */
 const MediaGallery = ({
     media = [],
@@ -18,6 +20,8 @@ const MediaGallery = ({
     className,
     onImageClick,
 }) => {
+    const { openPreview } = useImagePreview();
+
     // Chuẩn hóa danh sách URL (hỗ trợ cả mảng string lẫn mảng object)
     const urls = (Array.isArray(media) ? media : [])
         .map((item) =>
@@ -26,6 +30,16 @@ const MediaGallery = ({
         .filter(Boolean);
 
     if (urls.length === 0) return null;
+
+    // Xử lý sự kiện click vào ảnh: Chặn nổi bọt để không kích hoạt click mở PostDetail của PostCard
+    const handleImageClick = (e, index) => {
+        e.stopPropagation();
+        if (onImageClick) {
+            onImageClick(urls[index], index);
+        } else if (openPreview) {
+            openPreview(urls, index);
+        }
+    };
 
     // 1. Trường hợp: 1 ảnh duy nhất
     if (urls.length === 1) {
@@ -42,11 +56,10 @@ const MediaGallery = ({
                     alt="Post media 1"
                     crossOrigin={crossOrigin}
                     loading="lazy"
-                    onClick={() => onImageClick?.(urls[0], 0)}
+                    onClick={(e) => handleImageClick(e, 0)}
                     className={cn(
-                        "w-full object-cover transition-opacity duration-200",
+                        "w-full object-cover transition-opacity duration-200 cursor-pointer hover:opacity-95",
                         compact ? "max-h-64" : "max-h-125",
-                        onImageClick && "cursor-pointer hover:opacity-95",
                     )}
                 />
             </div>
@@ -73,11 +86,8 @@ const MediaGallery = ({
                             alt={`Post media ${i + 1}`}
                             crossOrigin={crossOrigin}
                             loading="lazy"
-                            onClick={() => onImageClick?.(url, i)}
-                            className={cn(
-                                "w-full h-full object-cover transition-opacity duration-200",
-                                onImageClick && "cursor-pointer hover:opacity-95",
-                            )}
+                            onClick={(e) => handleImageClick(e, i)}
+                            className="w-full h-full object-cover transition-opacity duration-200 cursor-pointer hover:opacity-95"
                         />
                     </div>
                 ))}
@@ -102,11 +112,8 @@ const MediaGallery = ({
                         alt="Post media 1"
                         crossOrigin={crossOrigin}
                         loading="lazy"
-                        onClick={() => onImageClick?.(urls[0], 0)}
-                        className={cn(
-                            "w-full h-full object-cover transition-opacity duration-200",
-                            onImageClick && "cursor-pointer hover:opacity-95",
-                        )}
+                        onClick={(e) => handleImageClick(e, 0)}
+                        className="w-full h-full object-cover transition-opacity duration-200 cursor-pointer hover:opacity-95"
                     />
                 </div>
 
@@ -122,11 +129,8 @@ const MediaGallery = ({
                                 alt={`Post media ${i + 2}`}
                                 crossOrigin={crossOrigin}
                                 loading="lazy"
-                                onClick={() => onImageClick?.(url, i + 1)}
-                                className={cn(
-                                    "w-full h-full object-cover transition-opacity duration-200",
-                                    onImageClick && "cursor-pointer hover:opacity-95",
-                                )}
+                                onClick={(e) => handleImageClick(e, i + 1)}
+                                className="w-full h-full object-cover transition-opacity duration-200 cursor-pointer hover:opacity-95"
                             />
                         </div>
                     ))}
@@ -155,11 +159,8 @@ const MediaGallery = ({
                         alt="Post media 1"
                         crossOrigin={crossOrigin}
                         loading="lazy"
-                        onClick={() => onImageClick?.(displayUrls[0], 0)}
-                        className={cn(
-                            "w-full h-full object-cover transition-opacity duration-200",
-                            onImageClick && "cursor-pointer hover:opacity-95",
-                        )}
+                        onClick={(e) => handleImageClick(e, 0)}
+                        className="w-full h-full object-cover transition-opacity duration-200 cursor-pointer hover:opacity-95"
                     />
                 </div>
                 <div className="relative flex-1 min-h-0 w-full overflow-hidden bg-neutral-200 dark:bg-neutral-800">
@@ -168,11 +169,8 @@ const MediaGallery = ({
                         alt="Post media 3"
                         crossOrigin={crossOrigin}
                         loading="lazy"
-                        onClick={() => onImageClick?.(displayUrls[2], 2)}
-                        className={cn(
-                            "w-full h-full object-cover transition-opacity duration-200",
-                            onImageClick && "cursor-pointer hover:opacity-95",
-                        )}
+                        onClick={(e) => handleImageClick(e, 2)}
+                        className="w-full h-full object-cover transition-opacity duration-200 cursor-pointer hover:opacity-95"
                     />
                 </div>
             </div>
@@ -185,11 +183,8 @@ const MediaGallery = ({
                         alt="Post media 2"
                         crossOrigin={crossOrigin}
                         loading="lazy"
-                        onClick={() => onImageClick?.(displayUrls[1], 1)}
-                        className={cn(
-                            "w-full h-full object-cover transition-opacity duration-200",
-                            onImageClick && "cursor-pointer hover:opacity-95",
-                        )}
+                        onClick={(e) => handleImageClick(e, 1)}
+                        className="w-full h-full object-cover transition-opacity duration-200 cursor-pointer hover:opacity-95"
                     />
                 </div>
                 <div className="relative flex-1 min-h-0 w-full overflow-hidden bg-neutral-200 dark:bg-neutral-800">
@@ -198,16 +193,13 @@ const MediaGallery = ({
                         alt="Post media 4"
                         crossOrigin={crossOrigin}
                         loading="lazy"
-                        onClick={() => onImageClick?.(displayUrls[3], 3)}
-                        className={cn(
-                            "w-full h-full object-cover transition-opacity duration-200",
-                            onImageClick && "cursor-pointer hover:opacity-95",
-                        )}
+                        onClick={(e) => handleImageClick(e, 3)}
+                        className="w-full h-full object-cover transition-opacity duration-200 cursor-pointer hover:opacity-95"
                     />
                     {remainingCount > 0 && (
                         <div
-                            onClick={() => onImageClick?.(displayUrls[3], 3)}
-                            className="absolute inset-0 bg-black/60 backdrop-blur-[2px] flex items-center justify-center text-white font-bold text-xl sm:text-2xl select-none cursor-pointer"
+                            onClick={(e) => handleImageClick(e, 3)}
+                            className="absolute inset-0 bg-black/60 backdrop-blur-[2px] flex items-center justify-center text-white font-bold text-xl sm:text-2xl select-none cursor-pointer hover:bg-black/70 transition-colors"
                         >
                             +{remainingCount}
                         </div>

@@ -80,8 +80,9 @@ export const usePostDetail = () => {
                 userCache.savePosts([postData]);
             }
 
-            // 4. Cập nhật state bài viết gốc
-            setPost(postData);
+            // 4. Cập nhật state bài viết gốc làm giàu từ cache
+            const enrichedPost = postData ? userCache.enrichPost(postData) : null;
+            setPost(enrichedPost);
         } catch (err) {
             // 5. Bắt lỗi nếu bài viết không tồn tại hoặc lỗi mạng
             setError(err?.response?.data?.message || "post.post_not_found");
@@ -100,9 +101,10 @@ export const usePostDetail = () => {
             const response = await postService.getPost(postId);
             const postData = response?.data || response;
 
-            // 3. Hợp nhất (merge) dữ liệu mới vào state hiện tại
+            // 3. Hợp nhất (merge) dữ liệu mới vào state hiện tại kèm làm giàu từ cache
             if (postData) {
-                setPost((prev) => (prev ? { ...prev, ...postData } : postData));
+                const enriched = userCache.enrichPost(postData);
+                setPost((prev) => (prev ? { ...prev, ...enriched } : enriched));
             }
         } catch {
             // 4. Nuốt lỗi nếu đồng bộ ngầm thất bại để tránh ảnh hưởng trải nghiệm người dùng
@@ -137,8 +139,9 @@ export const usePostDetail = () => {
                       ? rawData.data
                       : [];
 
-                // 5. Lưu các replies vào userCache để lưu vết tác giả & bài viết
-                userCache.savePosts(newReplies);
+                // 5. Lưu các replies vào userCache để lưu vết tác giả & bài viết và làm giàu từ cache
+                const enrichedReplies = newReplies.map((r) => userCache.enrichPost(r));
+                userCache.savePosts(enrichedReplies);
 
                 // 6. Đọc thông tin phân trang từ response API
                 const pagination =
@@ -147,10 +150,10 @@ export const usePostDetail = () => {
                 // 7. Cập nhật danh sách replies, lọc trùng lặp ID và sắp xếp DESC
                 setReplies((prev) => {
                     if (pageNum === 1) {
-                        return sortRepliesDesc(newReplies);
+                        return sortRepliesDesc(enrichedReplies);
                     }
                     const existingIds = new Set(prev.map((r) => String(r.id)));
-                    const uniqueNewReplies = newReplies.filter(
+                    const uniqueNewReplies = enrichedReplies.filter(
                         (r) => !existingIds.has(String(r.id)),
                     );
                     return sortRepliesDesc([...prev, ...uniqueNewReplies]);
@@ -270,11 +273,13 @@ export const usePostDetail = () => {
     const cardRef = useRef(null);
     // Ref tham chiếu đến phần tử nội dung cuộn bên trong card
     const contentRef = useRef(null);
+    const spacerRef = useRef(null);
 
     // Đồng bộ cuộn 2 chiều giữa khung card cố định và thanh cuộn window ngoài trang
     const { spacerHeight, handleCardScroll, resetScroll } = useWindowScrollSync({
         cardRef,
         contentRef,
+        spacerRef,
         deps: [
             post?.id,
             replies.length,
@@ -302,6 +307,7 @@ export const usePostDetail = () => {
         handleBack,
         cardRef,
         contentRef,
+        spacerRef,
         spacerHeight,
         handleCardScroll,
         resetScroll,

@@ -68,19 +68,23 @@ export const usePostInteractions = ({
     // Helper: Cập nhật state bài viết theo ID (hỗ trợ cả post đơn lẻ lẫn mảng posts)
     const updatePostState = useCallback(
         (postId, updater) => {
+            const targetIdStr = String(postId);
             // 1. Cập nhật bài viết đơn lẻ (ví dụ root post trong PostDetail)
             if (setPost) {
                 setPost((prev) => {
                     if (!prev) return prev;
-                    if (String(prev.id) === String(postId)) {
+                    if (String(prev.id) === targetIdStr) {
                         return updater(prev);
                     }
-                    if (prev.original_post && String(prev.original_post.id) === String(postId)) {
+                    if (prev.original_post && String(prev.original_post.id) === targetIdStr) {
                         const updatedOriginal = updater(prev.original_post);
                         return {
                             ...updater(prev),
                             original_post: updatedOriginal,
                         };
+                    }
+                    if (prev.original_post_id && String(prev.original_post_id) === targetIdStr) {
+                        return updater(prev);
                     }
                     return prev;
                 });
@@ -89,26 +93,57 @@ export const usePostInteractions = ({
             if (setPosts) {
                 setPosts((prevPosts) =>
                     prevPosts.map((p) => {
-                        if (String(p.id) === String(postId)) {
-                            return updater(p);
+                        const isMatch = String(p.id) === targetIdStr;
+                        const isOrigMatch = p.original_post && String(p.original_post.id) === targetIdStr;
+                        const isOrigIdMatch = p.original_post_id && String(p.original_post_id) === targetIdStr;
+                        if (!isMatch && !isOrigMatch && !isOrigIdMatch) {
+                            return p;
                         }
-                        if (p.original_post && String(p.original_post.id) === String(postId)) {
+                        let updatedP = isMatch ? updater(p) : { ...p };
+                        if (isOrigMatch) {
                             const updatedOriginal = updater(p.original_post);
-                            return {
-                                ...updater(p),
+                            updatedP = {
+                                ...updatedP,
                                 original_post: updatedOriginal,
+                                ...(updatedOriginal?.is_liked !== undefined && {
+                                    is_liked: updatedOriginal.is_liked,
+                                    is_liked_by_auth: updatedOriginal.is_liked_by_auth,
+                                    likes_count: updatedOriginal.likes_count,
+                                }),
+                                ...(updatedOriginal?.is_reposted !== undefined && {
+                                    is_reposted: updatedOriginal.is_reposted,
+                                    is_reposted_by_auth: updatedOriginal.is_reposted_by_auth,
+                                    reposts_count: updatedOriginal.reposts_count,
+                                    reposts_and_quotes_count: updatedOriginal.reposts_and_quotes_count,
+                                }),
                             };
                         }
-                        if (p.original_post_id && String(p.original_post_id) === String(postId)) {
-                            return updater(p);
+                        if (isOrigIdMatch && !isOrigMatch) {
+                            updatedP = updater(updatedP);
                         }
-                        return p;
+                        return updatedP;
                     }),
                 );
             }
         },
         [setPost, setPosts],
     );
+
+    // Lắng nghe sự kiện tương tác toàn cục để đồng bộ state bài viết trên tất cả component đang mount
+    useEffect(() => {
+        const handleInteractionUpdated = (e) => {
+            const { postId, ...updates } = e.detail || {};
+            if (!postId) return;
+            updatePostState(postId, (p) => ({
+                ...p,
+                ...updates,
+            }));
+        };
+        window.addEventListener("post:interaction_updated", handleInteractionUpdated);
+        return () => {
+            window.removeEventListener("post:interaction_updated", handleInteractionUpdated);
+        };
+    }, [updatePostState]);
 
     // Helper: Lấy thông tin bài viết hiện tại từ state
     const getCurrentPost = useCallback(
@@ -155,22 +190,39 @@ export const usePostInteractions = ({
             // Chống spam click nếu request bài này đang xử lý
             if (likingPostsRef.current.has(postId)) return;
 
-            // Tìm thông tin bài viết hiện tại
+            // Tìm thông tin bài viết hiện tại kết hợp cache
             const currentPost = getCurrentPost(target);
             if (!currentPost) return;
 
+            const cached = userCache.getPostInteraction(postId);
             const isCurrentlyLiked = Boolean(
-                currentPost.is_liked_by_auth !== undefined
-                    ? currentPost.is_liked_by_auth
-                    : currentPost.is_liked,
+                cached?.is_liked_by_auth !== undefined
+                    ? cached.is_liked_by_auth
+                    : cached?.is_liked !== undefined
+                      ? cached.is_liked
+                      : (currentPost.is_liked_by_auth !== undefined
+                          ? currentPost.is_liked_by_auth
+                          : currentPost.is_liked)
             );
             const nextLiked = !isCurrentlyLiked;
-            const currentCount = currentPost.likes_count || 0;
+            const currentCount = Math.max(
+                0,
+                cached?.likes_count !== undefined
+                    ? cached.likes_count
+                    : (currentPost.likes_count || 0),
+            );
             const nextCount = nextLiked
                 ? currentCount + 1
                 : Math.max(0, currentCount - 1);
 
-            // Optimistic Update: Cập nhật state ngay lập tức (0ms delay)
+            // 1. Cập nhật Single Source of Truth (userCache) và phát sự kiện đồng bộ toàn ứng dụng
+            userCache.setPostInteraction(postId, {
+                is_liked: nextLiked,
+                is_liked_by_auth: nextLiked,
+                likes_count: nextCount,
+            });
+
+            // 2. Optimistic Update: Cập nhật state ngay lập tức (0ms delay)
             updatePostState(postId, (p) => ({
                 ...p,
                 is_liked: nextLiked,
@@ -197,23 +249,29 @@ export const usePostInteractions = ({
                     resData?.post?.is_liked ??
                     response?.is_liked;
 
-                if (
-                    typeof serverLikesCount === "number" ||
-                    typeof serverIsLiked === "boolean"
-                ) {
+                const serverUpdates = {};
+                if (typeof serverLikesCount === "number") {
+                    serverUpdates.likes_count = serverLikesCount;
+                }
+                if (typeof serverIsLiked === "boolean") {
+                    serverUpdates.is_liked = serverIsLiked;
+                    serverUpdates.is_liked_by_auth = serverIsLiked;
+                }
+
+                if (Object.keys(serverUpdates).length > 0) {
+                    userCache.setPostInteraction(postId, serverUpdates);
                     updatePostState(postId, (p) => ({
                         ...p,
-                        ...(typeof serverLikesCount === "number" && {
-                            likes_count: serverLikesCount,
-                        }),
-                        ...(typeof serverIsLiked === "boolean" && {
-                            is_liked: serverIsLiked,
-                            is_liked_by_auth: serverIsLiked,
-                        }),
+                        ...serverUpdates,
                     }));
                 }
             } catch {
                 // Rollback lại trạng thái ban đầu nếu request thất bại (lỗi mạng, server)
+                userCache.setPostInteraction(postId, {
+                    is_liked: isCurrentlyLiked,
+                    is_liked_by_auth: isCurrentlyLiked,
+                    likes_count: currentCount,
+                });
                 updatePostState(postId, (p) => ({
                     ...p,
                     is_liked: isCurrentlyLiked,
@@ -245,21 +303,40 @@ export const usePostInteractions = ({
             const currentPost = getCurrentPost(target);
             if (!currentPost) return;
 
+            const cached = userCache.getPostInteraction(postId);
             const isCurrentlyReposted = Boolean(
-                currentPost.is_reposted_by_auth !== undefined
-                    ? currentPost.is_reposted_by_auth
-                    : currentPost.is_reposted,
+                cached?.is_reposted_by_auth !== undefined
+                    ? cached.is_reposted_by_auth
+                    : cached?.is_reposted !== undefined
+                      ? cached.is_reposted
+                      : (currentPost.is_reposted_by_auth !== undefined
+                          ? currentPost.is_reposted_by_auth
+                          : currentPost.is_reposted)
             );
             const nextReposted = !isCurrentlyReposted;
-            const currentCount =
-                currentPost.reposts_and_quotes_count ||
-                currentPost.reposts_count ||
-                0;
+            const currentCount = Math.max(
+                0,
+                cached?.reposts_and_quotes_count !== undefined
+                    ? cached.reposts_and_quotes_count
+                    : cached?.reposts_count !== undefined
+                      ? cached.reposts_count
+                      : (currentPost.reposts_and_quotes_count ||
+                         currentPost.reposts_count ||
+                         0),
+            );
             const nextCount = nextReposted
                 ? currentCount + 1
                 : Math.max(0, currentCount - 1);
 
-            // Optimistic Update: Cập nhật state ngay lập tức (0ms delay)
+            // 1. Cập nhật Single Source of Truth (userCache) và phát sự kiện đồng bộ toàn ứng dụng
+            userCache.setPostInteraction(postId, {
+                is_reposted: nextReposted,
+                is_reposted_by_auth: nextReposted,
+                reposts_count: nextCount,
+                reposts_and_quotes_count: nextCount,
+            });
+
+            // 2. Optimistic Update: Cập nhật state ngay lập tức (0ms delay)
             updatePostState(postId, (p) => ({
                 ...p,
                 is_reposted: nextReposted,
@@ -290,20 +367,21 @@ export const usePostInteractions = ({
                     resData?.post?.is_reposted ??
                     response?.is_reposted;
 
-                if (
-                    typeof serverCount === "number" ||
-                    typeof serverIsReposted === "boolean"
-                ) {
+                const serverUpdates = {};
+                if (typeof serverCount === "number") {
+                    serverUpdates.reposts_count = serverCount;
+                    serverUpdates.reposts_and_quotes_count = serverCount;
+                }
+                if (typeof serverIsReposted === "boolean") {
+                    serverUpdates.is_reposted = serverIsReposted;
+                    serverUpdates.is_reposted_by_auth = serverIsReposted;
+                }
+
+                if (Object.keys(serverUpdates).length > 0) {
+                    userCache.setPostInteraction(postId, serverUpdates);
                     updatePostState(postId, (p) => ({
                         ...p,
-                        ...(typeof serverCount === "number" && {
-                            reposts_count: serverCount,
-                            reposts_and_quotes_count: serverCount,
-                        }),
-                        ...(typeof serverIsReposted === "boolean" && {
-                            is_reposted: serverIsReposted,
-                            is_reposted_by_auth: serverIsReposted,
-                        }),
+                        ...serverUpdates,
                     }));
                 }
 
@@ -315,6 +393,12 @@ export const usePostInteractions = ({
                 }
             } catch (err) {
                 toast.error(err?.response?.data?.message || t("post.repost_failed"));
+                userCache.setPostInteraction(postId, {
+                    is_reposted: isCurrentlyReposted,
+                    is_reposted_by_auth: isCurrentlyReposted,
+                    reposts_count: currentCount,
+                    reposts_and_quotes_count: currentCount,
+                });
                 // Rollback lại trạng thái ban đầu nếu request thất bại
                 updatePostState(postId, (p) => ({
                     ...p,

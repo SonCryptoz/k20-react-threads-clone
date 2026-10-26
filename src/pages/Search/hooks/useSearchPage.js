@@ -15,6 +15,36 @@ import {
     cleanTopicName,
 } from "@/components/search/helpers/searchHelpers";
 
+// =========================================================================
+// Module-level Cache cho Trang Tìm kiếm:
+// Bảo toàn từ khóa, kết quả tìm kiếm, danh sách gợi ý và vị trí cuộn
+// khi chuyển đổi giữa các trang (Search <-> Home <-> Activity <-> Profile)
+// =========================================================================
+const globalSearchCache = {
+    query: "",
+    debouncedQuery: "",
+    suggestions: [],
+    isSuggestionsLoaded: false,
+    searchResults: { users: [], topics: [] },
+    isSearchLoaded: false,
+    followingMap: {},
+    scrollTop: 0,
+};
+
+if (typeof window !== "undefined") {
+    // Xóa cache tìm kiếm khi đăng xuất hoặc chuyển đổi tài khoản
+    window.addEventListener("user:session_changed", () => {
+        globalSearchCache.query = "";
+        globalSearchCache.debouncedQuery = "";
+        globalSearchCache.suggestions = [];
+        globalSearchCache.isSuggestionsLoaded = false;
+        globalSearchCache.searchResults = { users: [], topics: [] };
+        globalSearchCache.isSearchLoaded = false;
+        globalSearchCache.followingMap = {};
+        globalSearchCache.scrollTop = 0;
+    });
+}
+
 /**
  * useSearchPage
  * Custom hook quản lý toàn bộ nghiệp vụ và trạng thái cho trang Tìm kiếm (/search):
@@ -42,20 +72,22 @@ export const useSearchPage = () => {
     // ==========================================
     // State & Refs: Từ khóa, kết quả tìm kiếm, trạng thái tải & Khóa tác vụ
     // ==========================================
-    // Lấy từ khóa ban đầu từ URL Search Param '?q=...'
+    // Lấy từ khóa ban đầu: ưu tiên URL param '?q=...', nếu không có thì lấy từ cache
     const urlQuery = searchParams.get("q") || "";
     // State lưu giá trị chuỗi nhập liệu tìm kiếm theo thời gian thực từ input
-    const [query, setQuery] = useState(urlQuery);
+    const [query, setQuery] = useState(() => urlQuery || globalSearchCache.query);
     // Áp dụng kỹ thuật Debounce 600ms để trì hoãn việc gọi API cho đến khi người dùng ngừng gõ
     const debouncedQuery = useDebounce(query, 600);
 
-    // State lưu danh sách người dùng được đề xuất theo dõi (hiển thị khi chưa tìm kiếm hoặc từ khóa < 2 ký tự)
-    const [suggestions, setSuggestions] = useState([]);
-    // Cờ loading hiển thị skeleton cho danh sách gợi ý theo dõi ban đầu
-    const [isSuggestionsLoading, setIsSuggestionsLoading] = useState(true);
+    // State lưu danh sách người dùng được đề xuất theo dõi (khởi tạo từ module cache)
+    const [suggestions, setSuggestions] = useState(() => globalSearchCache.suggestions);
+    // Cờ loading hiển thị skeleton: nếu đã có cache gợi ý và chưa nhập từ khóa thì không hiện skeleton
+    const [isSuggestionsLoading, setIsSuggestionsLoading] = useState(
+        () => !globalSearchCache.isSuggestionsLoaded && !(urlQuery || globalSearchCache.query),
+    );
 
     // State lưu kết quả tìm kiếm gồm 2 mảng: danh sách tài khoản (users) và danh sách chủ đề (topics)
-    const [searchResults, setSearchResults] = useState({ users: [], topics: [] });
+    const [searchResults, setSearchResults] = useState(() => globalSearchCache.searchResults);
     // Cờ loading khi đang gọi API tìm kiếm tổng hợp
     const [isSearchLoading, setIsSearchLoading] = useState(false);
 
@@ -65,7 +97,7 @@ export const useSearchPage = () => {
     const [reloadKey, setReloadKey] = useState(0);
 
     // Hashmap lưu trạng thái theo dõi của currentUser với từng user ID: { [userId]: boolean }
-    const [followingMap, setFollowingMap] = useState({});
+    const [followingMap, setFollowingMap] = useState(() => globalSearchCache.followingMap);
     // Hashmap lưu trạng thái đang gọi API follow/unfollow của từng user ID riêng biệt: { [userId]: boolean }
     const [actionLoadingMap, setActionLoadingMap] = useState({});
     // Ref Set lưu trữ ID các user đang xử lý follow nhằm khóa chống spam click / double-click trong tích tắc
@@ -75,8 +107,20 @@ export const useSearchPage = () => {
     const isSearching =
         (query.trim().length >= 2 && query !== debouncedQuery) || isSearchLoading;
     // Đồng bộ cuộn 2 chiều giữa khung card cố định và thanh cuộn ngoài trang của trình duyệt
-    const { cardRef, contentRef, spacerHeight, handleCardScroll } = useWindowScrollSync({
-        isLoading: isSuggestionsLoading || isSearchLoading,
+    const cardRef = useRef(null);
+    const contentRef = useRef(null);
+    const spacerRef = useRef(null);
+    const { spacerHeight, handleCardScroll, restoreScroll } = useWindowScrollSync({
+        cardRef,
+        contentRef,
+        spacerRef,
+        deps: [
+            suggestions.length,
+            searchResults.users.length,
+            searchResults.topics.length,
+            isSuggestionsLoading,
+            isSearchLoading,
+        ],
     });
 
     // Cờ xác định đang ở chế độ tìm kiếm (khi từ khóa sau debounce có từ 2 ký tự trở lên)
@@ -154,8 +198,10 @@ export const useSearchPage = () => {
                 return item;
             });
 
-            // 4. Cập nhật state danh sách gợi ý
+            // 4. Cập nhật state danh sách gợi ý và lưu vào Module Cache
             setSuggestions(enriched);
+            globalSearchCache.suggestions = enriched;
+            globalSearchCache.isSuggestionsLoaded = true;
 
             // 5. Cập nhật hashmap theo dõi cho các user này (chỉ khi người dùng đã đăng nhập)
             const map = {};
@@ -165,7 +211,11 @@ export const useSearchPage = () => {
                     (userCache.isFollowing(u.id, u.username) ||
                     Boolean(u.is_following || u.is_followed_by_auth));
             });
-            setFollowingMap((prev) => ({ ...prev, ...map }));
+            setFollowingMap((prev) => {
+                const next = { ...prev, ...map };
+                globalSearchCache.followingMap = next;
+                return next;
+            });
         } catch (err) {
             // 6. Xử lý lỗi tải dữ liệu
             if (isCancelledRef.current) return;
@@ -234,11 +284,16 @@ export const useSearchPage = () => {
                 }
             });
 
-            // 7. Cập nhật state kết quả tìm kiếm hoàn chỉnh
-            setSearchResults({
+            // 7. Cập nhật state kết quả tìm kiếm hoàn chỉnh và lưu vào Module Cache
+            const finalResults = {
                 users: enrichedUsers,
                 topics: Array.from(uniqueTopicsMap.values()),
-            });
+            };
+            setSearchResults(finalResults);
+            globalSearchCache.searchResults = finalResults;
+            globalSearchCache.isSearchLoaded = true;
+            globalSearchCache.debouncedQuery = cleanQuery;
+            globalSearchCache.query = cleanQuery;
         } catch (err) {
             // 8. Bắt lỗi tìm kiếm
             if (isCancelledRef.current) return;
@@ -255,6 +310,8 @@ export const useSearchPage = () => {
     useEffect(() => {
         const trimmed = debouncedQuery.trim();
         if (trimmed.length >= 2) return;
+        // Bỏ qua nếu đã có cache gợi ý từ trước
+        if (globalSearchCache.isSuggestionsLoaded && globalSearchCache.suggestions.length > 0 && reloadKey === 0) return;
 
         const isCancelledRef = { current: false };
         // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -269,6 +326,8 @@ export const useSearchPage = () => {
     useEffect(() => {
         const trimmed = debouncedQuery.trim();
         if (trimmed.length < 2) return;
+        // Bỏ qua nếu đã có cache kết quả cho cùng từ khóa từ trước
+        if (globalSearchCache.isSearchLoaded && globalSearchCache.debouncedQuery === trimmed && reloadKey === 0) return;
 
         const isCancelledRef = { current: false };
         // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -278,6 +337,70 @@ export const useSearchPage = () => {
             isCancelledRef.current = true;
         };
     }, [debouncedQuery, reloadKey, performSearch]);
+
+    // Cờ đánh dấu hệ thống đang khôi phục cuộn
+    const isRestoringScrollRef = useRef(false);
+    const isUnmountedRef = useRef(false);
+
+    // Quản lý cờ unmount để chặn mọi sự kiện cuộn rơi vào 0 khi component bị unmount khỏi DOM
+    useEffect(() => {
+        isUnmountedRef.current = false;
+        isRestoringScrollRef.current = false;
+        return () => {
+            isUnmountedRef.current = true;
+        };
+    }, []);
+
+    // Lắng nghe cuộn liên tục để lưu vị trí cuộn thực tế theo thời gian thực vào Module Cache
+    useEffect(() => {
+        const cardEl = cardRef?.current;
+        if (!cardEl) return;
+
+        const onScroll = () => {
+            if (isUnmountedRef.current || isRestoringScrollRef.current) return;
+            // Bỏ qua nếu khung card đang bị thu hẹp hoặc không có nội dung cuộn (unmounting / skeleton)
+            if (cardEl.scrollHeight <= cardEl.clientHeight + 10) return;
+
+            globalSearchCache.scrollTop = cardEl.scrollTop;
+        };
+
+        cardEl.addEventListener("scroll", onScroll, { passive: true });
+        return () => {
+            cardEl.removeEventListener("scroll", onScroll);
+        };
+    }, [cardRef]);
+
+    // Khôi phục vị trí cuộn khi quay lại trang Search từ các trang khác
+    const hasInitializedRef = useRef(false);
+    useEffect(() => {
+        if (!hasInitializedRef.current) {
+            hasInitializedRef.current = true;
+            if (globalSearchCache.isSuggestionsLoaded || globalSearchCache.isSearchLoaded) {
+                isRestoringScrollRef.current = true;
+                const targetScroll = globalSearchCache.scrollTop ?? 0;
+                restoreScroll(targetScroll);
+                const timer = setTimeout(() => {
+                    isRestoringScrollRef.current = false;
+                }, 400);
+                return () => clearTimeout(timer);
+            }
+        }
+    }, [restoreScroll]);
+
+    // Lắng nghe sự kiện re-tap vào icon Search khi đang ở sẵn trang Search (cuộn mượt lên đỉnh)
+    useEffect(() => {
+        const handleSearchReTap = () => {
+            if (cardRef?.current) {
+                cardRef.current.scrollTo({ top: 0, behavior: "smooth" });
+            }
+            if (typeof window !== "undefined") {
+                window.scrollTo({ top: 0, behavior: "smooth" });
+            }
+        };
+
+        window.addEventListener("search:re-tap", handleSearchReTap);
+        return () => window.removeEventListener("search:re-tap", handleSearchReTap);
+    }, [cardRef]);
 
     // Toggle Theo dõi / Bỏ theo dõi với Optimistic UI (0ms latency) & Self-Healing
     const handleToggleFollow = useCallback(
@@ -380,12 +503,18 @@ export const useSearchPage = () => {
 
     // Xóa nhanh từ khóa
     const handleClear = useCallback(() => {
+        globalSearchCache.query = "";
+        globalSearchCache.debouncedQuery = "";
+        globalSearchCache.searchResults = { users: [], topics: [] };
+        globalSearchCache.isSearchLoaded = false;
         setQuery("");
         setSearchResults({ users: [], topics: [] });
     }, []);
 
     // Reload khi gặp lỗi
     const reload = useCallback(() => {
+        globalSearchCache.isSuggestionsLoaded = false;
+        globalSearchCache.isSearchLoaded = false;
         setReloadKey((k) => k + 1);
     }, []);
 
@@ -411,6 +540,7 @@ export const useSearchPage = () => {
         handleTopicClick,
         cardRef,
         contentRef,
+        spacerRef,
         spacerHeight,
         handleCardScroll,
     };

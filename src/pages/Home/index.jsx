@@ -21,9 +21,20 @@ const HomePage = () => {
     const { t } = useTranslation();
     useDocumentTitle(t("home.title"));
 
-    // 1. Hook quản lý danh sách feed & phân trang (tự động xử lý cuộn lên đầu và nhận bài mới)
-    const {
+    // 0. Refs quản lý khung cuộn và cơ chế đồng bộ cuộn
+    const cardRef = useRef(null);
+    const contentRef = useRef(null);
+    const spacerRef = useRef(null);
+
+    // 1. Hook đồng bộ cuộn 2 chiều giữa khung card và thanh cuộn ngoài trang
+    const { spacerHeight, handleCardScroll, restoreScroll } = useWindowScrollSync({
         cardRef,
+        contentRef,
+        spacerRef,
+    });
+
+    // 2. Hook quản lý danh sách feed & phân trang (tự động xử lý cuộn lên đầu và nhận bài mới)
+    const {
         activeTab,
         posts,
         setPosts,
@@ -36,9 +47,12 @@ const HomePage = () => {
         lastElementRef,
         removePost,
         updatePost,
-    } = useHomeFeed();
+    } = useHomeFeed({
+        cardRef,
+        restoreScroll,
+    });
 
-    // 2. Hook quản lý tương tác bài viết (Like, Repost, Comment, Quote, Edit, Share Image...)
+    // 3. Hook quản lý tương tác bài viết (Like, Repost, Comment, Quote, Edit, Share Image...)
     const {
         likePost,
         repostPost,
@@ -76,15 +90,6 @@ const HomePage = () => {
         setPosts,
         onDeleteSuccess: removePost,
         onEditSuccess: updatePost,
-    });
-
-    // 3. Hook đồng bộ cuộn 2 chiều giữa khung card và thanh cuộn ngoài trang
-    const contentRef = useRef(null);
-    const { spacerHeight, handleCardScroll } = useWindowScrollSync({
-        cardRef,
-        contentRef,
-        deps: [posts.length, isLoading],
-        resetTrigger: activeTab,
     });
 
     return (
@@ -212,6 +217,7 @@ const HomePage = () => {
 
             {/* Spacer bù chiều cao ngoài trang, tạo thanh cuộn trang chính xác 1:1 trên Desktop */}
             <div
+                ref={spacerRef}
                 aria-hidden="true"
                 style={{ height: `${spacerHeight}px` }}
                 className="hidden md:block w-full pointer-events-none"

@@ -1,10 +1,11 @@
-import { Link, NavLink } from "react-router";
+import { Link, NavLink, useLocation } from "react-router";
 import ThemeToggle from "./ThemeToggle";
 import LanguageSwitcher from "./LanguageSwitcher";
 import CreatePostModal from "@/components/modals/CreatePostModal";
 import useSidebar from "./hooks/useSidebar";
 
 const Sidebar = () => {
+    const location = useLocation();
     // logic nghiệp vụ (Auth guard, Create Modal, Nav Items, Active State)
     const {
         isCreateModalOpen,
@@ -14,6 +15,12 @@ const Sidebar = () => {
         isItemActive,
     } = useSidebar();
 
+    const handleLogoClick = () => {
+        if (location.pathname === "/") {
+            window.dispatchEvent(new CustomEvent("home:re-tap"));
+        }
+    };
+
     return (
         <>
             {/* DESKTOP SIDEBAR - Cố định bên trái */}
@@ -22,6 +29,7 @@ const Sidebar = () => {
                 <div className="flex items-center justify-center">
                     <Link
                         to="/"
+                        onClick={handleLogoClick}
                         className="p-2 hover:scale-105 active:scale-95 transition-transform duration-200"
                         aria-label="Threads Home"
                     >

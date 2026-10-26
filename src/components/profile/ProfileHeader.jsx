@@ -1,5 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { User as UserIcon, Loader2 } from "lucide-react";
+import { useImagePreview } from "@/hooks/useImagePreview";
 
 const ProfileHeader = ({
     user,
@@ -15,9 +16,16 @@ const ProfileHeader = ({
     onOpenFollowModal,
 }) => {
     const { t } = useTranslation();
+    const { openPreview } = useImagePreview();
 
     // Khi xem profile người khác, nếu đang tải thông tin ban đầu hoặc stats thì disable tương tác follow
     const isActionLoading = !isOwner && (isInfoLoading || isStatsLoading);
+
+    const handleAvatarClick = () => {
+        if (user?.avatar_url) {
+            openPreview([user.avatar_url], 0, { author: user });
+        }
+    };
 
     return (
         <div className="w-full pt-5 pb-3 px-4 md:px-6 select-none">
@@ -77,7 +85,13 @@ const ProfileHeader = ({
 
                 {/* Avatar lớn bên phải */}
                 <div className="shrink-0">
-                    <div className="w-20 h-20 md:w-22 md:h-22 rounded-full overflow-hidden bg-neutral-200 dark:bg-neutral-800 border-2 border-neutral-200/60 dark:border-neutral-700/60 flex items-center justify-center shadow-xs">
+                    <div
+                        onClick={handleAvatarClick}
+                        title={user?.avatar_url ? (t("image_preview.view_avatar") || "Xem ảnh đại diện") : undefined}
+                        className={`w-20 h-20 md:w-22 md:h-22 rounded-full overflow-hidden bg-neutral-200 dark:bg-neutral-800 border-2 border-neutral-200/60 dark:border-neutral-700/60 flex items-center justify-center shadow-xs transition-transform ${
+                            user?.avatar_url ? "cursor-pointer hover:opacity-90 active:scale-95" : ""
+                        }`}
+                    >
                         {user?.avatar_url ? (
                             <img
                                 src={user.avatar_url}

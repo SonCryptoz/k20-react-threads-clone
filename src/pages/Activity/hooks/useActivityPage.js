@@ -13,6 +13,87 @@ import { toast } from "@/components/ui/toast";
 
 const PAGE_SIZE = 10;
 
+// =========================================================================
+// Module-level Cache cho Trang Hoạt động:
+// Bảo toàn tab đang mở, danh sách followers, reposts và vị trí cuộn
+// khi chuyển đổi giữa các trang (Activity <-> Home <-> Search <-> Profile)
+// =========================================================================
+const globalActivityCache = {
+    followers: [],
+    allSourceReposts: [],
+    reposts: [],
+    isFollowersLoaded: false,
+    isRepostsLoaded: false,
+    lastActiveTab: "followers",
+    followingMap: {},
+    scrollTops: {
+        followers: 0,
+        reposts: 0,
+    },
+};
+
+const updateCachedPostList = (list, detail) => {
+    if (!Array.isArray(list)) return list;
+    const targetIdStr = String(detail.postId);
+    return list.map((p) => {
+        const isMatch = String(p.id) === targetIdStr;
+        const isOrigMatch = p.original_post && String(p.original_post.id) === targetIdStr;
+        const isOrigIdMatch = p.original_post_id && String(p.original_post_id) === targetIdStr;
+        if (!isMatch && !isOrigMatch && !isOrigIdMatch) {
+            return p;
+        }
+        let updatedP = isMatch ? { ...p, ...detail } : { ...p };
+        if (isOrigMatch) {
+            const updatedOriginal = { ...p.original_post, ...detail };
+            updatedP = {
+                ...updatedP,
+                original_post: updatedOriginal,
+                ...(updatedOriginal.is_liked !== undefined && {
+                    is_liked: updatedOriginal.is_liked,
+                    is_liked_by_auth: updatedOriginal.is_liked_by_auth,
+                    likes_count: updatedOriginal.likes_count,
+                }),
+                ...(updatedOriginal.is_reposted !== undefined && {
+                    is_reposted: updatedOriginal.is_reposted,
+                    is_reposted_by_auth: updatedOriginal.is_reposted_by_auth,
+                    reposts_count: updatedOriginal.reposts_count,
+                    reposts_and_quotes_count: updatedOriginal.reposts_and_quotes_count,
+                }),
+            };
+        }
+        if (isOrigIdMatch && !isOrigMatch) {
+            updatedP = { ...updatedP, ...detail };
+        }
+        return updatedP;
+    });
+};
+
+if (typeof window !== "undefined") {
+    // Xóa cache hoạt động khi đăng xuất hoặc chuyển đổi tài khoản
+    window.addEventListener("user:session_changed", () => {
+        globalActivityCache.followers = [];
+        globalActivityCache.allSourceReposts = [];
+        globalActivityCache.reposts = [];
+        globalActivityCache.isFollowersLoaded = false;
+        globalActivityCache.isRepostsLoaded = false;
+        globalActivityCache.lastActiveTab = "followers";
+        globalActivityCache.followingMap = {};
+        globalActivityCache.scrollTops = { followers: 0, reposts: 0 };
+    });
+
+    // Đồng bộ tương tác (Like, Repost) vào cache tab Reposts ở module level
+    window.addEventListener("post:interaction_updated", (e) => {
+        const detail = e.detail;
+        if (!detail?.postId) return;
+        if (globalActivityCache.reposts) {
+            globalActivityCache.reposts = updateCachedPostList(globalActivityCache.reposts, detail);
+        }
+        if (globalActivityCache.allSourceReposts) {
+            globalActivityCache.allSourceReposts = updateCachedPostList(globalActivityCache.allSourceReposts, detail);
+        }
+    });
+}
+
 /**
  * useActivityPage
  * Custom hook quản lý toàn bộ nghiệp vụ và trạng thái cho trang Hoạt động (/activity):
@@ -36,18 +117,40 @@ export const useActivityPage = () => {
     // ==========================================
     // State & Refs: Tabs, danh sách dữ liệu & trạng thái tải
     // ==========================================
-    // Quản lý tab đang kích hoạt: "followers" (Người theo dõi) hoặc "reposts" (Bài đăng lại)
-    const [activeTab, setActiveTab] = useState("followers");
+    // Quản lý tab đang kích hoạt: ưu tiên tab đã mở gần nhất trong Module Cache
+    const [activeTab, setActiveTab] = useState(() => globalActivityCache.lastActiveTab || "followers");
 
-    // State lưu danh sách người theo dõi currentUser, đã được làm giàu dữ liệu avatar và trạng thái follow
-    const [followers, setFollowers] = useState([]);
+    // Cờ đánh dấu đang trong quá trình chuyển tab (tạm khóa Infinite Scroll)
+    const isTabSwitchingRef = useRef(false);
+    const tabSwitchTimerRef = useRef(null);
+
+    // State lưu danh sách người theo dõi currentUser (khởi tạo từ Module Cache)
+    const [followers, setFollowers] = useState(() => globalActivityCache.followers);
     // State lưu toàn bộ danh sách bài đăng lại của currentUser nhận từ API (làm kho nguồn để phân trang slice)
-    const [allSourceReposts, setAllSourceReposts] = useState([]);
-    // State lưu danh sách bài đăng lại đang hiển thị trên giao diện (cắt lát theo từng chunk PAGE_SIZE)
-    const [reposts, setReposts] = useState([]);
+    const [allSourceReposts, setAllSourceReposts] = useState(() => globalActivityCache.allSourceReposts);
+    // State lưu danh sách bài đăng lại đang hiển thị trên giao diện (khởi tạo từ Module Cache)
+    const [reposts, setReposts] = useState(() => globalActivityCache.reposts);
 
-    // Cờ trạng thái loading khi tải dữ liệu tab lần đầu tiên (hiển thị skeleton)
-    const [isLoading, setIsLoading] = useState(true);
+    // Lắng nghe sự kiện tương tác toàn cục để đồng bộ state tab Reposts
+    useEffect(() => {
+        const handleInteractionUpdated = (e) => {
+            const detail = e.detail;
+            if (!detail?.postId) return;
+            setReposts((prev) => updateCachedPostList(prev, detail));
+            setAllSourceReposts((prev) => updateCachedPostList(prev, detail));
+        };
+        window.addEventListener("post:interaction_updated", handleInteractionUpdated);
+        return () => {
+            window.removeEventListener("post:interaction_updated", handleInteractionUpdated);
+        };
+    }, []);
+
+    // Cờ trạng thái loading khi tải dữ liệu tab lần đầu tiên: nếu tab đã nạp trong cache thì không hiện skeleton
+    const isInitialTabLoaded =
+        activeTab === "followers"
+            ? globalActivityCache.isFollowersLoaded
+            : globalActivityCache.isRepostsLoaded;
+    const [isLoading, setIsLoading] = useState(() => !isInitialTabLoaded);
     // Cờ trạng thái loading khi cuộn xuống đáy tải thêm bài đăng lại (Infinite Scroll)
     const [isLoadingMore, setIsLoadingMore] = useState(false);
     // State lưu thông báo lỗi khi gọi API tải dữ liệu thất bại
@@ -56,7 +159,7 @@ export const useActivityPage = () => {
     const [reloadKey, setReloadKey] = useState(0);
 
     // Hashmap lưu trạng thái currentUser có đang theo dõi user đó không: { [userId]: boolean }
-    const [followingMap, setFollowingMap] = useState({});
+    const [followingMap, setFollowingMap] = useState(() => globalActivityCache.followingMap);
     // Hashmap lưu trạng thái đang gọi API follow/unfollow cho từng user ID: { [userId]: boolean }
     const [actionLoadingMap, setActionLoadingMap] = useState({});
 
@@ -65,16 +168,13 @@ export const useActivityPage = () => {
     // Ref tham chiếu đến phần tử nội dung cuộn bên trong card
     const contentRef = useRef(null);
 
-    // Set lưu trữ các tab đã được tải trong phiên làm việc để tránh nháy skeleton khó chịu khi chuyển tab qua lại
-    const loadedTabsRef = useRef(new Set());
-
     // Tải dữ liệu cho tab "followers" kết hợp đối soát 2 chiều với danh sách followings và cache
     const loadFollowersData = useCallback(async (isCancelledRef) => {
         // 1. Kiểm tra guard: Bắt buộc phải có thông tin currentUser đã đăng nhập
         if (!currentUser?.id) return;
 
         // 2. Kiểm tra xem tab này đã từng tải chưa; nếu lần đầu thì hiển thị skeleton loading
-        const isFirstLoad = !loadedTabsRef.current.has("followers");
+        const isFirstLoad = !globalActivityCache.isFollowersLoaded;
         if (isFirstLoad) {
             setIsLoading(true);
         }
@@ -109,7 +209,8 @@ export const useActivityPage = () => {
 
             // 7. Cập nhật state followers và đánh dấu tab đã tải thành công
             setFollowers(userList);
-            loadedTabsRef.current.add("followers");
+            globalActivityCache.followers = userList;
+            globalActivityCache.isFollowersLoaded = true;
 
             // 8. Xây dựng Set chứa các ID mà currentUser đang theo dõi từ kết quả getFollowings
             const myFollowingIdSet = new Set();
@@ -189,7 +290,7 @@ export const useActivityPage = () => {
         if (!currentUser?.id) return;
 
         // 2. Hiển thị skeleton loading nếu là lần đầu tiên mở tab
-        const isFirstLoad = !loadedTabsRef.current.has("reposts");
+        const isFirstLoad = !globalActivityCache.isRepostsLoaded;
         if (isFirstLoad) {
             setIsLoading(true);
         }
@@ -200,19 +301,24 @@ export const useActivityPage = () => {
             const res = await userService.getUserReposts(currentUser.id, { per_page: 50 });
             if (isCancelledRef.current) return;
 
-            // 4. Lọc bỏ các bài viết rác, bài viết mồ côi hoặc các bài đã bị xóa trong userCache
-            const repostsList = (res?.data || []).filter(
-                (p) =>
-                    !userCache.isPostDeleted(p.id) &&
-                    !userCache.isPostDeleted(p.original_post_id) &&
-                    !userCache.isPostDeleted(p.original_post?.id) &&
-                    Boolean(p.original_post?.id || p.content),
-            );
+            // 4. Lọc bỏ các bài viết rác, bài viết mồ côi hoặc các bài đã bị xóa trong userCache kèm làm giàu từ cache
+            const repostsList = (res?.data || [])
+                .filter(
+                    (p) =>
+                        !userCache.isPostDeleted(p.id) &&
+                        !userCache.isPostDeleted(p.original_post_id) &&
+                        !userCache.isPostDeleted(p.original_post?.id) &&
+                        Boolean(p.original_post?.id || p.content),
+                )
+                .map((p) => userCache.enrichPost(p));
 
             // 5. Lưu kho nguồn allSourceReposts và hiển thị trang đầu tiên
+            const initialReposts = repostsList.slice(0, PAGE_SIZE);
             setAllSourceReposts(repostsList);
-            setReposts(repostsList.slice(0, PAGE_SIZE));
-            loadedTabsRef.current.add("reposts");
+            setReposts(initialReposts);
+            globalActivityCache.allSourceReposts = repostsList;
+            globalActivityCache.reposts = initialReposts;
+            globalActivityCache.isRepostsLoaded = true;
         } catch (err) {
             // 6. Xử lý lỗi nếu fetch dữ liệu thất bại
             if (isCancelledRef.current) return;
@@ -279,11 +385,91 @@ export const useActivityPage = () => {
         return () => window.removeEventListener("post:deleted", handleGlobalPostDeleted);
     }, []);
 
+    // Đồng bộ cuộn khung card với thanh cuộn ngoài trang
+    const currentListLength = activeTab === "followers" ? followers.length : reposts.length;
+    const spacerRef = useRef(null);
+    const { spacerHeight, handleCardScroll, restoreScroll } = useWindowScrollSync({
+        cardRef,
+        contentRef,
+        spacerRef,
+        deps: [currentListLength, isLoading, isLoadingMore, activeTab],
+    });
+
+    // Cờ đánh dấu hệ thống đang khôi phục vị trí cuộn
+    const isRestoringScrollRef = useRef(false);
+    const isUnmountedRef = useRef(false);
+
+    // Quản lý cờ unmount để chặn mọi sự kiện cuộn rơi vào 0 khi component bị unmount khỏi DOM
+    useEffect(() => {
+        isUnmountedRef.current = false;
+        isRestoringScrollRef.current = false;
+        return () => {
+            isUnmountedRef.current = true;
+        };
+    }, []);
+
+    // Lắng nghe cuộn liên tục để lưu vị trí cuộn thực tế theo thời gian thực vào Module Cache
+    useEffect(() => {
+        const cardEl = cardRef?.current;
+        if (!cardEl) return;
+
+        const onScroll = () => {
+            if (isUnmountedRef.current || isRestoringScrollRef.current) return;
+            // Bỏ qua nếu khung card đang bị thu hẹp hoặc không có nội dung cuộn (unmounting / skeleton)
+            if (cardEl.scrollHeight <= cardEl.clientHeight + 10) return;
+
+            globalActivityCache.scrollTops[activeTab] = cardEl.scrollTop;
+        };
+
+        cardEl.addEventListener("scroll", onScroll, { passive: true });
+        return () => {
+            cardEl.removeEventListener("scroll", onScroll);
+        };
+    }, [cardRef, activeTab]);
+
+    // Khôi phục vị trí cuộn ban đầu từ Module Cache khi quay lại trang Activity
+    const hasInitializedRef = useRef(false);
+    useEffect(() => {
+        if (!hasInitializedRef.current) {
+            hasInitializedRef.current = true;
+            const isCurrentTabLoaded =
+                activeTab === "followers"
+                    ? globalActivityCache.isFollowersLoaded
+                    : globalActivityCache.isRepostsLoaded;
+
+            if (isCurrentTabLoaded) {
+                isRestoringScrollRef.current = true;
+                const targetScroll = globalActivityCache.scrollTops[activeTab] ?? 0;
+                restoreScroll(targetScroll);
+                const timer = setTimeout(() => {
+                    isRestoringScrollRef.current = false;
+                }, 400);
+                return () => clearTimeout(timer);
+            }
+        }
+    }, [activeTab, restoreScroll]);
+
+    // Lắng nghe sự kiện re-tap vào icon Activity khi đang ở trang Activity (cuộn mượt lên đỉnh)
+    useEffect(() => {
+        const handleActivityReTap = () => {
+            if (cardRef?.current) {
+                cardRef.current.scrollTo({ top: 0, behavior: "smooth" });
+            }
+            if (typeof window !== "undefined") {
+                window.scrollTo({ top: 0, behavior: "smooth" });
+            }
+        };
+
+        window.addEventListener("activity:re-tap", handleActivityReTap);
+        return () => window.removeEventListener("activity:re-tap", handleActivityReTap);
+    }, [cardRef]);
+
     // Quản lý phân trang & Cuộn vô tận cho tab Reposts
     const hasMore = reposts.length < allSourceReposts.length;
 
     // Xử lý tải thêm bài đăng lại khi người dùng cuộn xuống đáy
     const handleLoadMore = useCallback(() => {
+        if (isTabSwitchingRef.current) return;
         // 1. Kiểm tra guard: không tải trùng lặp khi đang bận
         if (isLoading || isLoadingMore) return;
         // 2. Không tải nếu đã hiển thị hết danh sách nguồn
@@ -295,7 +481,9 @@ export const useActivityPage = () => {
         setTimeout(() => {
             setReposts((prev) => {
                 const currentCount = prev.length;
-                return allSourceReposts.slice(0, currentCount + PAGE_SIZE);
+                const nextReposts = allSourceReposts.slice(0, currentCount + PAGE_SIZE);
+                globalActivityCache.reposts = nextReposts;
+                return nextReposts;
             });
             // 5. Tắt cờ loading cuộn thêm
             setIsLoadingMore(false);
@@ -306,6 +494,7 @@ export const useActivityPage = () => {
         onLoadMore: handleLoadMore,
         hasMore: activeTab === "reposts" && hasMore,
         isLoading: isLoading || isLoadingMore,
+        isLockedRef: isTabSwitchingRef,
         rootMargin: "250px",
     });
 
@@ -314,9 +503,15 @@ export const useActivityPage = () => {
         const isCancelledRef = { current: false };
 
         if (activeTab === "followers") {
+            if (globalActivityCache.isFollowersLoaded && globalActivityCache.followers.length > 0 && reloadKey === 0) {
+                return;
+            }
             // eslint-disable-next-line react-hooks/set-state-in-effect
             loadFollowersData(isCancelledRef);
         } else {
+            if (globalActivityCache.isRepostsLoaded && globalActivityCache.reposts.length > 0 && reloadKey === 0) {
+                return;
+            }
             loadRepostsData(isCancelledRef);
         }
 
@@ -325,11 +520,38 @@ export const useActivityPage = () => {
         };
     }, [activeTab, reloadKey, loadFollowersData, loadRepostsData]);
 
-    // Xử lý chuyển đổi giữa các tab
-    const handleTabChange = useCallback((newTab) => {
-        if (newTab === activeTab) return;
-        setActiveTab(newTab);
-    }, [activeTab]);
+    // Xử lý chuyển đổi giữa các tab: lưu vị trí cuộn tab cũ, khôi phục tab mới
+    const handleTabChange = useCallback(
+        (newTab) => {
+            if (newTab === activeTab) return;
+
+            isTabSwitchingRef.current = true;
+            isRestoringScrollRef.current = true;
+            if (tabSwitchTimerRef.current) clearTimeout(tabSwitchTimerRef.current);
+            tabSwitchTimerRef.current = setTimeout(() => {
+                isTabSwitchingRef.current = false;
+                isRestoringScrollRef.current = false;
+            }, 400);
+
+            globalActivityCache.lastActiveTab = newTab;
+            setActiveTab(newTab);
+
+            const isNewTabLoaded =
+                newTab === "followers"
+                    ? globalActivityCache.isFollowersLoaded
+                    : globalActivityCache.isRepostsLoaded;
+
+            if (isNewTabLoaded) {
+                setIsLoading(false);
+                const targetScroll = globalActivityCache.scrollTops[newTab] ?? 0;
+                restoreScroll(targetScroll);
+            } else {
+                setIsLoading(true);
+                restoreScroll(0);
+            }
+        },
+        [activeTab, restoreScroll],
+    );
 
     // Lắng nghe sự kiện follow toàn cục (từ các modal hoặc card khác) để đồng bộ tức thì
     useEffect(() => {
@@ -435,18 +657,10 @@ export const useActivityPage = () => {
 
     // Tải lại dữ liệu
     const reload = useCallback(() => {
-        loadedTabsRef.current.clear();
+        globalActivityCache.isFollowersLoaded = false;
+        globalActivityCache.isRepostsLoaded = false;
         setReloadKey((prev) => prev + 1);
     }, []);
-
-    // Đồng bộ cuộn khung card với thanh cuộn ngoài trang
-    const currentListLength = activeTab === "followers" ? followers.length : reposts.length;
-    const { spacerHeight, handleCardScroll } = useWindowScrollSync({
-        cardRef,
-        contentRef,
-        deps: [currentListLength, isLoading, isLoadingMore, activeTab],
-        resetTrigger: activeTab,
-    });
 
     return {
         activeTab,
@@ -466,6 +680,7 @@ export const useActivityPage = () => {
         handleUserClick,
         cardRef,
         contentRef,
+        spacerRef,
         spacerHeight,
         handleCardScroll,
         currentUser,

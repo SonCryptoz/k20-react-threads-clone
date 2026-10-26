@@ -3,6 +3,7 @@ import { useDispatch, useSelector } from "react-redux";
 
 import AppRoutes from "./routes/AppRoutes";
 import { ThemeProvider } from "./contexts/ThemeContext";
+import { ImagePreviewProvider } from "./contexts/ImagePreviewContext";
 import { getAccessToken } from "./utils/tokenStorage";
 import { fetchCurrentUser } from "./features/authSlice";
 import Skeleton from "./components/ui/skeleton";
@@ -20,9 +21,11 @@ function App() {
 
     return (
         <ThemeProvider>
-            <AppRoutes />
-            <Skeleton isVisible={!isInitialized} />
-            <Toaster />
+            <ImagePreviewProvider>
+                <AppRoutes />
+                <Skeleton isVisible={!isInitialized} />
+                <Toaster />
+            </ImagePreviewProvider>
         </ThemeProvider>
     );
 }

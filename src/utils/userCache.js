@@ -17,6 +17,8 @@ const userById = new Map();
 const postsByAuthor = new Map();
 // Tập hợp các ID bài viết đã bị xóa trong phiên để lọc triệt để khỏi các feed/cache
 const deletedPostIds = new Set();
+// Bảng băm lưu trạng thái tương tác bài viết (Like, Repost, Số lượng...) theo postId
+const postInteractions = new Map();
 // Cờ đánh dấu đã quét sâu toàn bộ bài viết trong hệ thống hay chưa
 let deepScanned = false;
 
@@ -211,6 +213,7 @@ export const userCache = {
         activeUserId = null;
         followingIds.clear();
         followingUsernames.clear();
+        postInteractions.clear();
 
         // Xóa sạch các cờ relational is_following trong bộ nhớ user
         userByUsername.forEach((u) => {
@@ -316,9 +319,10 @@ export const userCache = {
     // Lưu danh sách bài viết vào cache (từ feed, profile, post detail)
     savePosts: (posts) => {
         if (!Array.isArray(posts)) return;
-        posts.forEach((post) => {
-            if (!post || !post.id) return;
-            if (deletedPostIds.has(String(post.id))) return;
+        posts.forEach((rawPost) => {
+            if (!rawPost || !rawPost.id) return;
+            if (deletedPostIds.has(String(rawPost.id))) return;
+            const post = userCache.enrichPost(rawPost);
 
             // 1. Lưu theo tác giả bài viết
             const author = post.user || post.author;
@@ -457,6 +461,84 @@ export const userCache = {
 
     // Lấy toàn bộ danh sách ID đang theo dõi
     getAllFollowingIds: () => Array.from(followingIds),
+
+    // =========================================================================
+    // Quản lý trạng thái tương tác bài viết (Like, Repost, Số lượng...)
+    // Hoạt động như Single Source of Truth cho toàn bộ ứng dụng
+    // =========================================================================
+
+    // Lưu hoặc cập nhật trạng thái tương tác của một bài viết
+    setPostInteraction: (postId, updates) => {
+        if (!postId || !updates || typeof updates !== "object") return;
+        const pIdStr = String(postId);
+        const prev = postInteractions.get(pIdStr) || {};
+        const next = { ...prev, ...updates };
+        postInteractions.set(pIdStr, next);
+
+        // Đồng bộ vào postsByAuthor nếu bài viết đã có trong cache tác giả
+        postsByAuthor.forEach((authorMap) => {
+            const cachedPost = authorMap.get(pIdStr);
+            if (cachedPost) {
+                authorMap.set(pIdStr, { ...cachedPost, ...next });
+            }
+            // Cũng kiểm tra bài đăng lại / trích dẫn trong cache tác giả
+            authorMap.forEach((p, key) => {
+                if (p.original_post && String(p.original_post.id) === pIdStr) {
+                    authorMap.set(key, {
+                        ...p,
+                        original_post: { ...p.original_post, ...next },
+                    });
+                }
+            });
+        });
+
+        // Phát sự kiện toàn cục để các trang/component/cache khác đồng bộ tức thì (0ms)
+        if (typeof window !== "undefined") {
+            window.dispatchEvent(
+                new CustomEvent("post:interaction_updated", {
+                    detail: {
+                        postId: pIdStr,
+                        ...next,
+                    },
+                }),
+            );
+        }
+        return next;
+    },
+
+    // Lấy trạng thái tương tác đã lưu của bài viết theo ID
+    getPostInteraction: (postId) => {
+        if (!postId) return null;
+        return postInteractions.get(String(postId)) || null;
+    },
+
+    // Làm giàu bài viết với trạng thái tương tác mới nhất trong cache
+    enrichPost: (post) => {
+        if (!post || !post.id) return post;
+        const pIdStr = String(post.id);
+        const interaction = postInteractions.get(pIdStr);
+        let enriched = interaction ? { ...post, ...interaction } : post;
+
+        if (enriched.original_post && enriched.original_post.id) {
+            const origIdStr = String(enriched.original_post.id);
+            const origInteraction = postInteractions.get(origIdStr);
+            if (origInteraction) {
+                enriched = {
+                    ...enriched,
+                    original_post: {
+                        ...enriched.original_post,
+                        ...origInteraction,
+                    },
+                };
+            }
+        }
+        return enriched;
+    },
+
+    // Xóa toàn bộ trạng thái tương tác đã lưu
+    clearPostInteractions: () => {
+        postInteractions.clear();
+    },
 };
 
 export default userCache;

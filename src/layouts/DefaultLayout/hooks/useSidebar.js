@@ -75,12 +75,22 @@ export const useSidebar = () => {
             label: t("nav.for_you") || "Home",
             icon: Home,
             exact: true,
+            onClick: () => {
+                if (location.pathname === "/") {
+                    window.dispatchEvent(new CustomEvent("home:re-tap"));
+                }
+            },
         },
         {
             key: "search",
             to: "/search",
             label: t("nav.search") || "Search",
             icon: Search,
+            onClick: () => {
+                if (location.pathname === "/search") {
+                    window.dispatchEvent(new CustomEvent("search:re-tap"));
+                }
+            },
         },
         {
             key: "create",
@@ -93,12 +103,22 @@ export const useSidebar = () => {
             to: "/activity",
             label: t("nav.activity") || "Activity",
             icon: Heart,
+            onClick: () => {
+                if (location.pathname === "/activity") {
+                    window.dispatchEvent(new CustomEvent("activity:re-tap"));
+                }
+            },
         },
         {
             key: "profile",
             to: "/profile",
             label: t("nav.profile") || "Profile",
             icon: User,
+            onClick: () => {
+                if (location.pathname === "/profile") {
+                    window.dispatchEvent(new CustomEvent("profile:re-tap"));
+                }
+            },
         },
     ];
 

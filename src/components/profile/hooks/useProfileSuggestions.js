@@ -16,20 +16,24 @@ import { toast } from "@/components/ui/toast";
  * - Phân tách trạng thái theo dõi theo phiên đăng nhập (Auth Scoped)
  * - Tự động đồng bộ và làm mới followMap khi đổi tài khoản (user:session_changed)
  */
+// Bộ nhớ đệm module lưu danh sách gợi ý để không tải lại khi chuyển tab hoặc chuyển trang
+let cachedSuggestions = null;
+let cachedFollowingMap = null;
+
 export const useProfileSuggestions = ({ onFollowChange } = {}) => {
     const { t } = useTranslation();
     const navigate = useNavigate();
     const location = useLocation();
     const { isAuthenticated } = useSelector((state) => state.auth);
 
-    // State lưu danh sách gợi ý người dùng từ API getSuggestions
-    const [suggestions, setSuggestions] = useState([]);
+    // State lưu danh sách gợi ý người dùng từ API getSuggestions (khôi phục từ cache nếu có)
+    const [suggestions, setSuggestions] = useState(cachedSuggestions || []);
     // State cờ đang tải danh sách gợi ý ban đầu
-    const [isLoading, setIsLoading] = useState(true);
+    const [isLoading, setIsLoading] = useState(!cachedSuggestions);
     // State lưu thông báo lỗi khi tải danh sách gợi ý thất bại
     const [error, setError] = useState(null);
     // Map lưu trạng thái theo dõi { [targetUserId]: boolean } của tài khoản hiện tại đối với từng gợi ý
-    const [followingMap, setFollowingMap] = useState({});
+    const [followingMap, setFollowingMap] = useState(cachedFollowingMap || {});
     // Map lưu trạng thái đang gọi API follow/unfollow { [targetUserId]: boolean }
     const [actionLoadingMap, setActionLoadingMap] = useState({});
     // Khóa trigger để tải lại danh sách gợi ý khi người dùng bấm reload
@@ -37,6 +41,11 @@ export const useProfileSuggestions = ({ onFollowChange } = {}) => {
 
     useEffect(() => {
         let isCancelled = false;
+
+        // Nếu đã có cache và không phải do người dùng bấm reload -> giữ nguyên cache
+        if (cachedSuggestions && reloadKey === 0) {
+            return;
+        }
 
         const loadData = async () => {
             try {
@@ -47,6 +56,8 @@ export const useProfileSuggestions = ({ onFollowChange } = {}) => {
                     userCache.saveUser(u);
                 });
                 setSuggestions(list);
+                cachedSuggestions = list;
+
                 const initialMap = {};
                 list.forEach((u) => {
                     initialMap[u.id] =
@@ -54,6 +65,7 @@ export const useProfileSuggestions = ({ onFollowChange } = {}) => {
                         (userCache.isFollowing(u.id, u.username) || Boolean(u.is_following));
                 });
                 setFollowingMap(initialMap);
+                cachedFollowingMap = initialMap;
             } catch (err) {
                 if (isCancelled) return;
                 const { message } = getApiError(err, "Không thể tải danh sách gợi ý");
@@ -96,6 +108,8 @@ export const useProfileSuggestions = ({ onFollowChange } = {}) => {
         };
 
         const handleSessionChanged = () => {
+            cachedSuggestions = null;
+            cachedFollowingMap = null;
             if (!isAuthenticated) {
                 setFollowingMap({});
                 return;
@@ -119,6 +133,8 @@ export const useProfileSuggestions = ({ onFollowChange } = {}) => {
 
     // Tải lại danh sách gợi ý khi gặp lỗi hoặc người dùng yêu cầu làm mới
     const reload = () => {
+        cachedSuggestions = null;
+        cachedFollowingMap = null;
         setIsLoading(true);
         setError(null);
         setReloadKey((prev) => prev + 1);

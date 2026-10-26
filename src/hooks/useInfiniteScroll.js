@@ -14,6 +14,7 @@ export const useInfiniteScroll = ({
     hasMore,
     isLoading,
     rootMargin = "200px",
+    isLockedRef,
 }) => {
     // Lưu tham chiếu đối tượng IntersectionObserver để dọn dẹp hoặc ngắt kết nối
     const observerRef = useRef(null);
@@ -21,8 +22,13 @@ export const useInfiniteScroll = ({
     // Callback Ref gán vào phần tử DOM cuối cùng của danh sách (Sentinel Element)
     const lastElementRef = useCallback(
         (node) => {
-            // Đang tải dữ liệu: không kích hoạt observer mới để tránh spam request
-            if (isLoading) return;
+            // Đang tải dữ liệu: ngắt kết nối và không kích hoạt observer mới
+            if (isLoading) {
+                if (observerRef.current) {
+                    observerRef.current.disconnect();
+                }
+                return;
+            }
 
             // Ngắt kết nối observer của node trước đó khi node DOM thay đổi hoặc render lại
             if (observerRef.current) {
@@ -32,8 +38,8 @@ export const useInfiniteScroll = ({
             // Khởi tạo IntersectionObserver mới theo dõi node cuối cùng
             observerRef.current = new IntersectionObserver(
                 (entries) => {
-                    // Kiểm tra: phần tử đã lọt vào viewport (hoặc vùng rootMargin) VÀ còn dữ liệu để tải VÀ không bận
-                    if (entries[0]?.isIntersecting && hasMore && !isLoading) {
+                    // Kiểm tra: phần tử đã lọt vào viewport VÀ còn dữ liệu để tải VÀ không bận VÀ không bị khóa chuyển tab
+                    if (entries[0]?.isIntersecting && hasMore && !isLoading && !isLockedRef?.current) {
                         onLoadMore();
                     }
                 },
@@ -45,7 +51,7 @@ export const useInfiniteScroll = ({
                 observerRef.current.observe(node);
             }
         },
-        [isLoading, hasMore, onLoadMore, rootMargin],
+        [isLoading, hasMore, onLoadMore, rootMargin, isLockedRef],
     );
 
     return { lastElementRef };

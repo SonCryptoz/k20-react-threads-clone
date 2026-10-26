@@ -30,8 +30,16 @@ const InteractionBar = ({
 }) => {
     const { t } = useTranslation();
 
-    const isLiked = Boolean(post?.is_liked || post?.is_liked_by_auth);
-    const isReposted = Boolean(post?.is_reposted || post?.is_reposted_by_auth);
+    const isLiked = Boolean(
+        post?.is_liked_by_auth !== undefined
+            ? post.is_liked_by_auth
+            : post?.is_liked
+    );
+    const isReposted = Boolean(
+        post?.is_reposted_by_auth !== undefined
+            ? post.is_reposted_by_auth
+            : post?.is_reposted
+    );
 
     const likesCount = post?.likes_count || 0;
     const repliesCount = post?.replies_count || 0;

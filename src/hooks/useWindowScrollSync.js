@@ -13,6 +13,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 export const useWindowScrollSync = ({
     cardRef,
     contentRef,
+    spacerRef,
     deps = [],
     resetTrigger,
 } = {}) => {
@@ -57,6 +58,7 @@ export const useWindowScrollSync = ({
             const isDesktop = typeof window !== "undefined" && window.innerWidth >= 768;
             if (!isDesktop) {
                 setSpacerHeight(0);
+                if (spacerRef?.current) spacerRef.current.style.height = "0px";
                 if (window.scrollY > 0) {
                     window.scrollTo({ top: 0, behavior: "instant" });
                 }
@@ -68,6 +70,9 @@ export const useWindowScrollSync = ({
             // Chiều cao spacer CHÍNH XÁC bằng lượng nội dung vượt ngoài khung
             const maxScroll = Math.max(0, contentHeight - cardHeight);
             setSpacerHeight(maxScroll);
+            if (spacerRef?.current) {
+                spacerRef.current.style.height = `${maxScroll}px`;
+            }
         };
 
         updateHeight();
@@ -82,7 +87,7 @@ export const useWindowScrollSync = ({
             window.removeEventListener("resize", updateHeight);
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [contentRef, cardRef, ...deps]);
+    }, [contentRef, cardRef, spacerRef, ...deps]);
 
     // Lắng nghe tương tác wheel trên card để gán driver = 'card' (chỉ Desktop)
     useEffect(() => {
@@ -123,9 +128,9 @@ export const useWindowScrollSync = ({
             if (typeof window !== "undefined" && window.innerWidth < 768) return;
             if (isModalActive()) return;
 
-            // Nếu window đang là driver (người dùng đang kéo scrollbar window hoặc lăn ngoài card),
+            // Nếu window đang là driver hoặc hệ thống đang khôi phục cuộn,
             // bỏ qua để tránh phản hồi ngược gây giật
-            if (activeDriverRef.current === "window") return;
+            if (activeDriverRef.current === "window" || activeDriverRef.current === "system") return;
 
             setDriver("card");
             const targetTop = e.currentTarget.scrollTop;
@@ -152,11 +157,13 @@ export const useWindowScrollSync = ({
             if (typeof window !== "undefined" && window.innerWidth < 768) return;
             if (isModalActive()) return;
 
-            // Nếu card đang là driver (người dùng đang lăn chuột trong card),
+            // Nếu card đang là driver hoặc hệ thống đang khôi phục cuộn,
             // bỏ qua để card tự cuộn mượt mà theo native browser compositor
-            if (activeDriverRef.current === "card") return;
+            if (activeDriverRef.current === "card" || activeDriverRef.current === "system") return;
 
-            if (!cardRef?.current) return;
+            if (!cardRef?.current || !contentRef?.current) return;
+            // Nếu khung card đang bị thu hẹp hoặc không có khoảng cuộn hợp lệ, không can thiệp
+            if (cardRef.current.scrollHeight <= cardRef.current.clientHeight + 10) return;
 
             // Nếu người dùng đang kéo thanh cuộn trình duyệt (không phải do wheel event)
             if (!activeDriverRef.current) {
@@ -171,7 +178,7 @@ export const useWindowScrollSync = ({
             }
 
             windowRafIdRef.current = requestAnimationFrame(() => {
-                if (cardRef.current && activeDriverRef.current !== "card") {
+                if (cardRef.current && activeDriverRef.current !== "card" && activeDriverRef.current !== "system") {
                     cardRef.current.scrollTop = targetTop;
                 }
             });
@@ -184,31 +191,81 @@ export const useWindowScrollSync = ({
             if (cardRafIdRef.current) cancelAnimationFrame(cardRafIdRef.current);
             if (driverTimeoutRef.current) clearTimeout(driverTimeoutRef.current);
         };
-    }, [cardRef, setDriver, isModalActive]);
+    }, [cardRef, contentRef, setDriver, isModalActive]);
+
+    // Khôi phục vị trí cuộn chính xác (đồng bộ cả card và window không bị clamp)
+    const restoreScroll = useCallback(
+        (targetTop) => {
+            activeDriverRef.current = "system";
+            if (driverTimeoutRef.current) clearTimeout(driverTimeoutRef.current);
+            if (windowRafIdRef.current) cancelAnimationFrame(windowRafIdRef.current);
+            if (cardRafIdRef.current) cancelAnimationFrame(cardRafIdRef.current);
+
+            const isDesktop = typeof window !== "undefined" && window.innerWidth >= 768;
+
+            const applyScroll = () => {
+                if (isModalActive()) return;
+                if (contentRef?.current && cardRef?.current && isDesktop) {
+                    const contentHeight = contentRef.current.scrollHeight;
+                    const cardHeight = cardRef.current.clientHeight;
+                    const maxScroll = Math.max(0, contentHeight - cardHeight);
+                    // Đảm bảo spacer luôn tối thiểu bằng targetTop để window không bị browser clamp về 0
+                    const safeSpacerHeight = Math.max(maxScroll, targetTop);
+                    setSpacerHeight(safeSpacerHeight);
+                    if (spacerRef?.current) {
+                        spacerRef.current.style.height = `${safeSpacerHeight}px`;
+                    }
+                }
+
+                if (cardRef?.current) {
+                    cardRef.current.scrollTop = targetTop;
+                }
+
+                if (isDesktop) {
+                    window.scrollTo({
+                        top: targetTop,
+                        behavior: "instant",
+                    });
+                }
+            };
+
+            // 1. Áp dụng ngay lập tức tại Frame 0 (khôi phục 0ms tức thì)
+            applyScroll();
+
+            // 2. Chạy Frame 1 và Frame 2 để ổn định vị trí cuộn chống layout shift khi ảnh/media render
+            cardRafIdRef.current = requestAnimationFrame(() => {
+                applyScroll();
+
+                windowRafIdRef.current = requestAnimationFrame(() => {
+                    applyScroll();
+
+                    // Chờ thêm 300ms để triệt tiêu mọi sự kiện cuộn tự nhiên phát sinh trong quá trình layout
+                    driverTimeoutRef.current = setTimeout(() => {
+                        activeDriverRef.current = null;
+                    }, 300);
+                });
+            });
+        },
+        [cardRef, contentRef, spacerRef, isModalActive],
+    );
 
     // Reset vị trí cuộn về 0 mượt mà (khi đổi tab)
     const resetScroll = useCallback(() => {
-        activeDriverRef.current = "system";
-        if (typeof window !== "undefined" && window.innerWidth >= 768) {
-            window.scrollTo({ top: 0, behavior: "instant" });
-        }
-        if (cardRef?.current) {
-            cardRef.current.scrollTop = 0;
-        }
-        setTimeout(() => {
-            activeDriverRef.current = null;
-        }, 100);
-    }, [cardRef]);
+        restoreScroll(0);
+    }, [restoreScroll]);
 
     // Tự động reset khi resetTrigger thay đổi
     useEffect(() => {
-        resetScroll();
+        if (resetTrigger !== undefined) {
+            resetScroll();
+        }
     }, [resetTrigger, resetScroll]);
 
     return {
         spacerHeight,
         handleCardScroll,
         resetScroll,
+        restoreScroll,
     };
 };
 

@@ -30,15 +30,15 @@
 
 ## 3. Tính năng chính (Features)
 
-- **Bảng tin trang chủ (Home Feed):** 3 tab (_For you_, _Following_, _Ghost posts_), phân trang cuộn vô tận, tự động chèn bài mới đăng lên đầu feed.
-- **Tìm kiếm thông minh (Search):** Trạng thái mặc định gợi ý theo dõi (_Follow Suggestions_), tìm kiếm song song Users & Topics với **Debounce 600ms**, đồng bộ URL `?q=...`.
-- **Hoạt động (Activity):** Tab _Follows_ đối soát trạng thái 2 chiều (Theo dõi lại / Đang theo dõi); Tab _Reposts_ bài đăng lại có tương tác và cuộn vô tận.
-- **Trang cá nhân (Profile):** Nhận diện quyền sở hữu (`isOwner`), chỉnh sửa hồ sơ & avatar, xem danh sách Followers/Following, 3 tab nội dung (_Threads_, _Reposts_, _Suggestions_).
-- **Chi tiết bài viết (Post Detail):** Xem bài gốc và chuỗi replies phân cấp dạng cây, tự động sắp xếp mới nhất lên đầu.
+- **Bảng tin trang chủ (Home Feed):** 3 tab (_For you_, _Following_, _Ghost posts_), phân trang cuộn vô tận, tự động chèn bài mới đăng lên đầu feed, bảo toàn dữ liệu và vị trí cuộn khi chuyển trang.
+- **Tìm kiếm thông minh (Search):** Trạng thái mặc định gợi ý theo dõi (_Follow Suggestions_), tìm kiếm song song Users & Topics với **Debounce 600ms**, đồng bộ URL `?q=...`, giữ nguyên kết quả tìm kiếm khi chuyển trang.
+- **Hoạt động (Activity):** Tab _Follows_ đối soát trạng thái 2 chiều (Theo dõi lại / Đang theo dõi); Tab _Reposts_ bài đăng lại có tương tác và cuộn vô tận, nhớ tab và vị trí cuộn khi điều hướng.
+- **Trang cá nhân (Profile):** Nhận diện quyền sở hữu (`isOwner`), chỉnh sửa hồ sơ & avatar, xem danh sách Followers/Following, 3 tab nội dung (_Threads_, _Reposts_, _Suggestions_) hoạt động độc lập, không reload dữ liệu khi đổi tab hoặc đổi trang.
+- **Chi tiết bài viết (Post Detail):** Xem bài gốc và chuỗi replies phân cấp dạng cây, tự động sắp xếp mới nhất lên đầu; khi bấm Back về feed trang trước giữ nguyên 100% vị trí đang xem dở.
 - **Tương tác bài viết toàn diện:** Thích (Like), Đăng lại (Repost), Trích dẫn (Quote), Xuất ảnh PNG bài viết (`html-to-image`), Lấy mã nhúng iframe (`/embed`), Menu quản lý bài viết (Sửa, Xóa, Báo cáo vi phạm).
 - **Hệ thống 10 Modals:** Reply, Quote, EditPost, EditProfile, Follow, CopyImage, Embed, BlockUser, DeletePost, Report.
 - **Xác thực an toàn:** Đăng ký, Đăng nhập, Quên/Đặt lại mật khẩu, Xác minh email qua token URL.
-- **Trải nghiệm giao diện (UX/UI):** Khung card cố định desktop đồng bộ 1:1, Skeleton Shimmer, Toast Notification, Khóa cuộn trang nền an toàn (`useLockBodyScroll`), Song ngữ (vi/en), Light/Dark theme.
+- **Trải nghiệm giao diện (UX/UI):** Khung card cố định desktop đồng bộ 1:1, Re-tap navigation to top, Skeleton Shimmer, Toast Notification, Khóa cuộn trang nền an toàn (`useLockBodyScroll`), Song ngữ (vi/en), Light/Dark theme.
 
 ---
 
@@ -53,13 +53,18 @@
 
 ### 4.2. Quản lý Cache & Đồng bộ thời gian thực (State & Cache Architecture)
 
+- **Module-Level In-Memory Cache (Chuẩn Threads Real - Cross-Route & Multi-Tab):** Xây dựng bộ nhớ đệm in-memory phân tầng cho toàn bộ các trang chính (**Home, Search, Activity, Profile**). Khi người dùng chuyển đổi qua lại giữa các trang hoặc bấm xem chi tiết bài viết rồi quay lại, toàn bộ dữ liệu, phân trang và tab đang chọn hiển thị ngay lập tức (0ms latency). Tự động dọn dẹp sạch sẽ khi đăng xuất (`user:session_changed`).
+- **Đồng bộ tương tác 2 chiều xuyên suốt ứng dụng (Bidirectional Post Interaction Sync):** Trạng thái Thích (Like/Unlike) và Đăng lại (Repost/Unrepost) cùng số lượng tương tác được chuẩn hóa và quản lý tập trung tại `userCache.setPostInteraction`. Khi người dùng tương tác ở bất kỳ đâu (Bảng tin Home, Trang cá nhân Profile, Hoạt động Activity hoặc Chi tiết bài viết PostDetail), sự kiện `post:interaction_updated` sẽ lập tức đồng bộ hóa 100% dữ liệu vào toàn bộ các tab và module cache trong bộ nhớ. Khi chuyển tab qua lại hoặc bấm xem chi tiết bài viết rồi quay lại, trạng thái active và số lượng tương tác luôn được bảo toàn đồng nhất, không bao giờ bị mất active hay lệch số liệu.
 - **Nguồn chân lý tập trung (Single Source of Truth):** Duy trì `followingIds` và `deletedPostIds` trong `userCache` lưu bền vững tại `localStorage`.
 - **Phân tách phiên người dùng độc lập (User-Scoped Isolation):** Tự động cô lập danh sách followings theo ID từng tài khoản (`threads_followings_user_${userId}`), loại bỏ hoàn toàn hiện tượng rò rỉ trạng thái theo dõi khi đăng nhập tài khoản khác hoặc chưa đăng nhập.
-- **Reactive Event Bus (0ms):** Phát sự kiện toàn cục (`user:follow_changed`, `user:session_changed`, `post:deleted`) giúp toàn bộ các trang và modals cập nhật đồng loạt ngay lập tức.
+- **Reactive Event Bus (0ms):** Phát sự kiện toàn cục (`user:follow_changed`, `user:session_changed`, `post:deleted`, `home:re-tap`...) giúp toàn bộ các trang và modals cập nhật đồng loạt ngay lập tức.
 - **Tự chữa lành xung đột (Conflict Self-Healing):** Tự động nhận diện lỗi `Already following this user` để duy trì trạng thái "Đang theo dõi" mượt mà, không báo lỗi đỏ.
 
 ### 4.3. Tối ưu giao diện & Hiệu năng nâng cao (Advanced UX)
 
+- **Khôi phục vị trí cuộn tức thì (0ms Scroll Restoration):** Cơ chế passive scroll tracking liên tục ghi nhận vị trí cuộn thực tế theo thời gian thực vào Module Cache. Khi quay lại trang hoặc chuyển tab, hệ thống khôi phục vị trí cuộn chính xác 1:1, kết hợp cờ khóa tạm thời trong 400ms (`isTabSwitchingRef`) để vô hiệu hóa Infinite Scroll, chống hiện tượng gọi thêm API nhầm lẫn hoặc mất vị trí cuộn khi click chuyển nhanh liên tục.
+- **Chuyển tab mượt mà chống nháy giao diện (Atomic Batch State Update):** Đồng bộ `activeTab`, `posts` và `isLoading` trong cùng một lượt render batch duy nhất của React 19, triệt tiêu hoàn toàn hiện tượng nhấp nháy 1-frame nội dung tab cũ trước khi hiện tab mới.
+- **Trải nghiệm Re-tap điều hướng chuẩn Native:** Nhấn lại vào icon Home, Search, Activity hoặc Profile trên Sidebar khi đang ở chính trang đó sẽ tự động kích hoạt cuộn mượt lên đỉnh (`scrollToTop`) và làm mới feed/dữ liệu tương tự Threads Mobile App.
 - **Đồng bộ cuộn Desktop Card (`useWindowScrollSync`):** Đo đạc chiều cao nội dung qua `ResizeObserver`, tạo `spacer` tàng hình và đồng bộ cuộn 2 chiều 60/120Hz mượt mà qua `requestAnimationFrame`.
 - **Khóa cuộn trang nền an toàn (`useLockBodyScroll`):** Chặn wheel chaining, overscroll và touchmove khi mở Modal mà không dùng `overflow: hidden`, bảo toàn tuyệt đối thuộc tính `position: sticky`.
 - **Đồng bộ kích thước Header & Card:** Đồng nhất chiều cao `h-13` (52px), viền dưới và khoảng cách `pt-2.5 md:pt-3` trên toàn bộ các trang (Home, Search, Activity, Profile, PostDetail).

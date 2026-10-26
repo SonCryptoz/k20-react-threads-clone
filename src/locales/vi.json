@@ -55,7 +55,7 @@
     "nav": {
         "for_you": "Dành cho bạn",
         "following": "Đang theo dõi",
-        "ghost_posts": "Ghost posts",
+        "ghost_posts": "Bài đăng ẩn danh",
         "search": "Tìm kiếm",
         "create": "Tạo bài",
         "activity": "Hoạt động",
@@ -281,5 +281,19 @@
         "min_chars_hint": "Nhập tối thiểu 2 ký tự để tìm kiếm",
         "reload": "Tải lại",
         "load_error": "Không thể tải dữ liệu tìm kiếm. Vui lòng thử lại sau."
+    },
+    "image_preview": {
+        "title": "Xem trước ảnh",
+        "close": "Đóng (Esc)",
+        "zoom_in": "Phóng to (+)",
+        "zoom_out": "Thu nhỏ (-)",
+        "reset_zoom": "Khôi phục kích thước ban đầu (0)",
+        "download": "Tải ảnh về máy",
+        "open_original": "Mở ảnh gốc trong tab mới",
+        "prev": "Ảnh trước (Mũi tên trái)",
+        "next": "Ảnh kế tiếp (Mũi tên phải)",
+        "load_error": "Không thể hiển thị hình ảnh",
+        "retry": "Thử lại",
+        "view_avatar": "Xem ảnh đại diện"
     }
 }

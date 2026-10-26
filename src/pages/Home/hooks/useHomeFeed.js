@@ -4,6 +4,86 @@ import postService from "@/services/postService";
 import useInfiniteScroll from "@/hooks/useInfiniteScroll";
 import userCache from "@/utils/userCache";
 
+// =========================================================================
+// Module-level Cache cho Trang Home:
+// Bảo toàn bài viết, phân trang và vị trí cuộn khi chuyển giữa các trang
+// (Home <-> Search <-> Activity <-> Profile <-> PostDetail) giống Threads thật
+// =========================================================================
+const globalHomeFeedCache = {
+    for_you: { posts: [], page: 1, hasMore: true, isLoaded: false, scrollTop: 0 },
+    following: { posts: [], page: 1, hasMore: true, isLoaded: false, scrollTop: 0 },
+    ghost: { posts: [], page: 1, hasMore: true, isLoaded: false, scrollTop: 0 },
+    activeTab: "for_you",
+    newlyCreatedPosts: [],
+};
+
+const updateCachedPostList = (list, detail) => {
+    if (!Array.isArray(list)) return list;
+    const targetIdStr = String(detail.postId);
+    return list.map((p) => {
+        const isMatch = String(p.id) === targetIdStr;
+        const isOrigMatch = p.original_post && String(p.original_post.id) === targetIdStr;
+        const isOrigIdMatch = p.original_post_id && String(p.original_post_id) === targetIdStr;
+        if (!isMatch && !isOrigMatch && !isOrigIdMatch) {
+            return p;
+        }
+        let updatedP = isMatch ? { ...p, ...detail } : { ...p };
+        if (isOrigMatch) {
+            const updatedOriginal = { ...p.original_post, ...detail };
+            updatedP = {
+                ...updatedP,
+                original_post: updatedOriginal,
+                ...(updatedOriginal.is_liked !== undefined && {
+                    is_liked: updatedOriginal.is_liked,
+                    is_liked_by_auth: updatedOriginal.is_liked_by_auth,
+                    likes_count: updatedOriginal.likes_count,
+                }),
+                ...(updatedOriginal.is_reposted !== undefined && {
+                    is_reposted: updatedOriginal.is_reposted,
+                    is_reposted_by_auth: updatedOriginal.is_reposted_by_auth,
+                    reposts_count: updatedOriginal.reposts_count,
+                    reposts_and_quotes_count: updatedOriginal.reposts_and_quotes_count,
+                }),
+            };
+        }
+        if (isOrigIdMatch && !isOrigMatch) {
+            updatedP = { ...updatedP, ...detail };
+        }
+        return updatedP;
+    });
+};
+
+if (typeof window !== "undefined") {
+    // Dọn dẹp cache trang chủ khi người dùng đăng xuất hoặc chuyển đổi tài khoản
+    window.addEventListener("user:session_changed", () => {
+        globalHomeFeedCache.for_you = { posts: [], page: 1, hasMore: true, isLoaded: false, scrollTop: 0 };
+        globalHomeFeedCache.following = { posts: [], page: 1, hasMore: true, isLoaded: false, scrollTop: 0 };
+        globalHomeFeedCache.ghost = { posts: [], page: 1, hasMore: true, isLoaded: false, scrollTop: 0 };
+        globalHomeFeedCache.activeTab = "for_you";
+        globalHomeFeedCache.newlyCreatedPosts = [];
+    });
+
+    // Đồng bộ tương tác (Like, Repost) vào toàn bộ cache các tab ở module level
+    window.addEventListener("post:interaction_updated", (e) => {
+        const detail = e.detail;
+        if (!detail?.postId) return;
+        ["for_you", "following", "ghost"].forEach((tabKey) => {
+            if (globalHomeFeedCache[tabKey]?.posts) {
+                globalHomeFeedCache[tabKey].posts = updateCachedPostList(
+                    globalHomeFeedCache[tabKey].posts,
+                    detail,
+                );
+            }
+        });
+        if (globalHomeFeedCache.newlyCreatedPosts) {
+            globalHomeFeedCache.newlyCreatedPosts = updateCachedPostList(
+                globalHomeFeedCache.newlyCreatedPosts,
+                detail,
+            );
+        }
+    });
+}
+
 /**
  * useHomeFeed
  * Custom hook quản lý toàn bộ dữ liệu danh sách bài viết trang Home:
@@ -14,21 +94,32 @@ import userCache from "@/utils/userCache";
  * - Trạng thái loading, error, reload
  * - Tự động chèn bài viết mới tạo & cuộn mượt lên đầu trang
  */
-export const useHomeFeed = ({ cardRef: externalCardRef, initialTab = "for_you" } = {}) => {
+export const useHomeFeed = ({
+    cardRef: externalCardRef,
+    onRestoreScroll,
+    restoreScroll,
+    initialTab = "for_you",
+} = {}) => {
     const internalCardRef = useRef(null);
     const cardRef = externalCardRef || internalCardRef;
     const location = useLocation();
+    const handleRestoreScroll = restoreScroll || onRestoreScroll;
 
-    // Tab đang chọn: "for_you" | "following" | "ghost"
-    const [activeTab, setActiveTab] = useState(initialTab);
+    // Tab đang chọn: ưu tiên lấy lại tab đang mở trước đó từ module cache
+    const [activeTab, setActiveTab] = useState(() => globalHomeFeedCache.activeTab || initialTab);
 
-    // Dữ liệu bài viết và phân trang
-    const [posts, setPosts] = useState([]);
-    const [page, setPage] = useState(1);
-    const [hasMore, setHasMore] = useState(true);
+    // Cờ đánh dấu đang trong quá trình chuyển tab và khôi phục cuộn (tạm khóa Infinite Scroll chống spam API)
+    const isTabSwitchingRef = useRef(false);
+    const tabSwitchTimerRef = useRef(null);
 
-    // Trạng thái tải
-    const [isLoading, setIsLoading] = useState(true);
+    // Dữ liệu bài viết và phân trang: khởi tạo trực tiếp từ Module Cache để hiển thị ngay 0ms khi quay lại trang
+    const currentCachedTab = globalHomeFeedCache[globalHomeFeedCache.activeTab || initialTab];
+    const [posts, setPosts] = useState(() => currentCachedTab?.posts || []);
+    const [page, setPage] = useState(() => currentCachedTab?.page || 1);
+    const [hasMore, setHasMore] = useState(() => currentCachedTab?.hasMore ?? true);
+
+    // Trạng thái tải: nếu tab đã nạp trong cache thì không hiển thị skeleton
+    const [isLoading, setIsLoading] = useState(() => !currentCachedTab?.isLoaded);
     const [isLoadingMore, setIsLoadingMore] = useState(false);
     const [error, setError] = useState(null);
 
@@ -39,10 +130,26 @@ export const useHomeFeed = ({ cardRef: externalCardRef, initialTab = "for_you" }
         currentTabRef.current = activeTab;
     }, [activeTab]);
 
+    // Bộ nhớ đệm (Cache) dữ liệu theo từng tab trỏ trực tiếp tới module cache toàn cục
+    const tabsCacheRef = useRef(globalHomeFeedCache);
+
     // Ref lưu các bài viết mới tạo trong phiên để đảm bảo không bị ghi đè khi tải trang 1
-    const newlyCreatedPostsRef = useRef([]);
+    const newlyCreatedPostsRef = useRef(globalHomeFeedCache.newlyCreatedPosts || []);
     // Ref lưu các ID bài viết đã xóa trong phiên để đảm bảo không bị hiện lại do cache API hoặc ref
     const deletedPostIdsRef = useRef(new Set());
+
+    // Lắng nghe sự kiện tương tác bài viết toàn cục để cập nhật state danh sách bài viết hiện tại
+    useEffect(() => {
+        const handleInteractionUpdated = (e) => {
+            const detail = e.detail;
+            if (!detail?.postId) return;
+            setPosts((prev) => updateCachedPostList(prev, detail));
+        };
+        window.addEventListener("post:interaction_updated", handleInteractionUpdated);
+        return () => {
+            window.removeEventListener("post:interaction_updated", handleInteractionUpdated);
+        };
+    }, []);
 
     // Chèn bài viết mới tạo vào đầu bảng tin (chuyển sang tab "Dành cho bạn", bảo toàn bài viết trong newlyCreatedPostsRef)
     const addNewPost = useCallback((newPost) => {
@@ -55,6 +162,21 @@ export const useHomeFeed = ({ cardRef: externalCardRef, initialTab = "for_you" }
             newPost,
             ...newlyCreatedPostsRef.current.filter((p) => String(p.id) !== postKey),
         ];
+        globalHomeFeedCache.newlyCreatedPosts = newlyCreatedPostsRef.current;
+
+        // Cập nhật tab cache cho tab "for_you"
+        const forYouCache = tabsCacheRef.current.for_you;
+        if (forYouCache) {
+            tabsCacheRef.current.for_you = {
+                ...forYouCache,
+                posts: [
+                    newPost,
+                    ...(forYouCache.posts || []).filter((p) => String(p.id) !== postKey),
+                ],
+                isLoaded: true,
+            };
+        }
+
         // Chuyển về tab For You để người dùng thấy bài viết vừa tạo ngay trên đầu
         setActiveTab("for_you");
         // Cập nhật state posts
@@ -64,7 +186,7 @@ export const useHomeFeed = ({ cardRef: externalCardRef, initialTab = "for_you" }
         ]);
     }, []);
 
-    // Xóa bài viết khỏi cả ref bài mới tạo, ref đã xóa và state posts
+    // Xóa bài viết khỏi cả ref bài mới tạo, ref đã xóa, cache các tab và state posts
     const removePost = useCallback((deletedPostId) => {
         if (!deletedPostId) return;
         const idStr = String(deletedPostId);
@@ -76,16 +198,34 @@ export const useHomeFeed = ({ cardRef: externalCardRef, initialTab = "for_you" }
             return pid !== idStr && origId !== idStr;
         };
         newlyCreatedPostsRef.current = newlyCreatedPostsRef.current.filter(filterFn);
+
+        // Đồng bộ loại bỏ bài viết trong tất cả các tab đã cache
+        Object.keys(tabsCacheRef.current).forEach((key) => {
+            if (tabsCacheRef.current[key]?.posts) {
+                tabsCacheRef.current[key].posts = tabsCacheRef.current[key].posts.filter(filterFn);
+            }
+        });
+
         setPosts((prev) => prev.filter(filterFn));
     }, []);
 
-    // Cập nhật bài viết trong cả ref bài mới tạo và state posts khi có chỉnh sửa (Edit)
+    // Cập nhật bài viết trong cả ref bài mới tạo, cache các tab và state posts khi có chỉnh sửa (Edit)
     const updatePost = useCallback((updatedPost) => {
         if (!updatedPost?.id) return;
         const updatedIdStr = String(updatedPost.id);
         newlyCreatedPostsRef.current = newlyCreatedPostsRef.current.map((p) =>
             String(p.id) === updatedIdStr ? { ...p, ...updatedPost } : p,
         );
+
+        // Đồng bộ cập nhật bài viết trong tất cả các tab đã cache
+        Object.keys(tabsCacheRef.current).forEach((key) => {
+            if (tabsCacheRef.current[key]?.posts) {
+                tabsCacheRef.current[key].posts = tabsCacheRef.current[key].posts.map((p) =>
+                    String(p.id) === updatedIdStr ? { ...p, ...updatedPost } : p,
+                );
+            }
+        });
+
         setPosts((prev) =>
             prev.map((p) => (String(p.id) === updatedIdStr ? { ...p, ...updatedPost } : p)),
         );
@@ -119,54 +259,73 @@ export const useHomeFeed = ({ cardRef: externalCardRef, initialTab = "for_you" }
                   : [];
 
             // 3. Lọc bỏ các bài viết đã bị xóa trong phiên làm việc hoặc trong cache
-            const newPosts = rawPosts.filter(
-                (p) =>
-                    !deletedPostIdsRef.current.has(String(p.id)) &&
-                    !deletedPostIdsRef.current.has(String(p.original_post_id)) &&
-                    !deletedPostIdsRef.current.has(String(p.original_post?.id)) &&
-                    !userCache.isPostDeleted(p.id) &&
-                    !userCache.isPostDeleted(p.original_post_id) &&
-                    !userCache.isPostDeleted(p.original_post?.id),
-            );
+            const newPosts = rawPosts
+                .filter(
+                    (p) =>
+                        !deletedPostIdsRef.current.has(String(p.id)) &&
+                        !deletedPostIdsRef.current.has(String(p.original_post_id)) &&
+                        !deletedPostIdsRef.current.has(String(p.original_post?.id)) &&
+                        !userCache.isPostDeleted(p.id) &&
+                        !userCache.isPostDeleted(p.original_post_id) &&
+                        !userCache.isPostDeleted(p.original_post?.id),
+                )
+                .map((p) => userCache.enrichPost(p));
 
             // 4. Lưu bài viết và thông tin tác giả vào userCache client-side
             userCache.savePosts(newPosts);
 
             const pagination = response?.pagination || response?.data?.pagination || {};
 
-            // 5. Cập nhật state bài viết (Trang 1: hòa trộn bài vừa tạo; Trang > 1: nối thêm bài viết)
-            setPosts((prev) => {
-                if (pageNum === 1) {
-                    const activeNewlyCreated = newlyCreatedPostsRef.current.filter(
-                        (p) => !deletedPostIdsRef.current.has(String(p.id)),
+            // 5. Cập nhật state bài viết & bộ nhớ đệm theo tab (Trang 1: hòa trộn bài vừa tạo; Trang > 1: nối thêm bài viết)
+            let nextPosts = [];
+            if (pageNum === 1) {
+                const activeNewlyCreated = newlyCreatedPostsRef.current.filter(
+                    (p) => !deletedPostIdsRef.current.has(String(p.id)),
+                );
+                if (activeNewlyCreated.length > 0 && tabKey === "for_you") {
+                    const newPostIds = new Set(
+                        activeNewlyCreated.map((p) => String(p.id)),
                     );
-                    if (activeNewlyCreated.length > 0 && tabKey === "for_you") {
-                        const newPostIds = new Set(
-                            activeNewlyCreated.map((p) => String(p.id)),
-                        );
-                        const remainingServerPosts = newPosts.filter(
-                            (p) => !newPostIds.has(String(p.id)),
-                        );
-                        return [...activeNewlyCreated, ...remainingServerPosts];
-                    }
-                    return newPosts;
+                    const remainingServerPosts = newPosts.filter(
+                        (p) => !newPostIds.has(String(p.id)),
+                    );
+                    nextPosts = [...activeNewlyCreated, ...remainingServerPosts];
+                } else {
+                    nextPosts = newPosts;
                 }
-                const existingIds = new Set(prev.map((p) => String(p.id)));
+            } else {
+                const prevPosts = tabsCacheRef.current[tabKey]?.posts || [];
+                const existingIds = new Set(prevPosts.map((p) => String(p.id)));
                 const uniqueNewPosts = newPosts.filter((p) => !existingIds.has(String(p.id)));
-                return [...prev, ...uniqueNewPosts];
-            });
+                nextPosts = [...prevPosts, ...uniqueNewPosts];
+            }
 
             // 6. Xác định xem còn bài viết ở các trang tiếp theo hay không
             const lastPage = pagination.last_page || (newPosts.length < 10 ? pageNum : pageNum + 1);
-            setHasMore(pageNum < lastPage && newPosts.length > 0);
-            setPage(pageNum);
+            const nextHasMore = pageNum < lastPage && newPosts.length > 0;
+
+            // 7. Lưu vào bộ nhớ đệm (cache) của tab tương ứng
+            tabsCacheRef.current[tabKey] = {
+                posts: nextPosts,
+                page: pageNum,
+                hasMore: nextHasMore,
+                isLoaded: true,
+                scrollTop: tabsCacheRef.current[tabKey]?.scrollTop ?? 0,
+            };
+
+            // 8. Nếu tab vẫn đang kích hoạt trên UI -> cập nhật state
+            if (currentTabRef.current === tabKey) {
+                setPosts(nextPosts);
+                setHasMore(nextHasMore);
+                setPage(pageNum);
+            }
         } catch (err) {
-            // 7. Xử lý lỗi: Ghi nhận thông báo lỗi nếu tab vẫn đang kích hoạt
+            // 9. Xử lý lỗi: Ghi nhận thông báo lỗi nếu tab vẫn đang kích hoạt
             if (currentTabRef.current === tabKey) {
                 setError(err?.message || "Không thể tải danh sách bài viết");
             }
         } finally {
-            // 8. Tắt trạng thái tải
+            // 10. Tắt trạng thái tải
             if (currentTabRef.current === tabKey) {
                 setIsLoading(false);
                 setIsLoadingMore(false);
@@ -174,14 +333,60 @@ export const useHomeFeed = ({ cardRef: externalCardRef, initialTab = "for_you" }
         }
     }, []);
 
-    // Mỗi khi đổi tab -> tải lại từ trang 1
+    // Cờ đánh dấu hệ thống đang khôi phục vị trí cuộn (chống ghi đè vị trí cũ)
+    const isRestoringScrollRef = useRef(false);
+    const isUnmountedRef = useRef(false);
+
+    // Quản lý cờ unmount để chặn mọi sự kiện cuộn rơi vào 0 khi component bị unmount khỏi DOM
     useEffect(() => {
-        // eslint-disable-next-line react-hooks/set-state-in-effect
-        setPosts([]);
-        setPage(1);
-        setHasMore(true);
-        fetchFeed(activeTab, 1, true);
-    }, [activeTab, fetchFeed]);
+        isUnmountedRef.current = false;
+        isRestoringScrollRef.current = false;
+        return () => {
+            isUnmountedRef.current = true;
+        };
+    }, []);
+
+    // Tải dữ liệu ban đầu cho tab khởi tạo khi mở ứng dụng lần đầu (hoặc khôi phục vị trí cuộn từ Module Cache khi quay lại trang)
+    const hasInitializedRef = useRef(false);
+    useEffect(() => {
+        if (!hasInitializedRef.current) {
+            hasInitializedRef.current = true;
+            if (tabsCacheRef.current[activeTab]?.isLoaded) {
+                // Đã có dữ liệu trong cache (quay lại từ Search, Activity, Profile, PostDetail...) -> khôi phục lại vị trí cuộn 0ms
+                isRestoringScrollRef.current = true;
+                const targetScroll = tabsCacheRef.current[activeTab]?.scrollTop ?? 0;
+                handleRestoreScroll?.(targetScroll);
+                const timer = setTimeout(() => {
+                    isRestoringScrollRef.current = false;
+                }, 400);
+                return () => clearTimeout(timer);
+            } else {
+                fetchFeed(activeTab, 1, true);
+            }
+        }
+    }, [activeTab, fetchFeed, handleRestoreScroll]);
+
+    // Lắng nghe cuộn liên tục trên cardRef để lưu vị trí cuộn thực tế theo thời gian thực (chống mất vị trí khi click đổi tab nhanh)
+    useEffect(() => {
+        const cardEl = cardRef?.current;
+        if (!cardEl) return;
+
+        const onScroll = () => {
+            if (isUnmountedRef.current || isRestoringScrollRef.current) return;
+            // Bỏ qua nếu khung card đang bị thu hẹp hoặc không có nội dung cuộn (unmounting / skeleton)
+            if (cardEl.scrollHeight <= cardEl.clientHeight + 10) return;
+
+            const top = cardEl.scrollTop;
+            if (tabsCacheRef.current[currentTabRef.current]) {
+                tabsCacheRef.current[currentTabRef.current].scrollTop = top;
+            }
+        };
+
+        cardEl.addEventListener("scroll", onScroll, { passive: true });
+        return () => {
+            cardEl.removeEventListener("scroll", onScroll);
+        };
+    }, [cardRef]);
 
     // Hàm cuộn mượt lên đỉnh khung card và cửa sổ
     const scrollToTop = useCallback(() => {
@@ -229,32 +434,87 @@ export const useHomeFeed = ({ cardRef: externalCardRef, initialTab = "for_you" }
         return () => window.removeEventListener("post:deleted", handleGlobalPostDeleted);
     }, [removePost]);
 
-    // Xử lý chuyển tab
+    // Xử lý chuyển tab: ĐỒNG BỘ CẢ ACTIVE TAB VÀ NỘI DUNG (BATCH RENDER) -> LOẠI BỎ HOÀN TOÀN HIỆN TƯỢNG NHÁY NỘI DUNG TAB CŨ
     const handleTabChange = useCallback(
         (newTab) => {
-            if (newTab === activeTab) return;
+            if (newTab === currentTabRef.current) return;
+
+            // Khóa tạm Infinite Scroll và bộ ghi nhận cuộn trong 400ms để ổn định vị trí mới
+            isTabSwitchingRef.current = true;
+            isRestoringScrollRef.current = true;
+            if (tabSwitchTimerRef.current) clearTimeout(tabSwitchTimerRef.current);
+            tabSwitchTimerRef.current = setTimeout(() => {
+                isTabSwitchingRef.current = false;
+                isRestoringScrollRef.current = false;
+            }, 400);
+
+            currentTabRef.current = newTab;
+            globalHomeFeedCache.activeTab = newTab;
             setActiveTab(newTab);
+
+            const cached = tabsCacheRef.current[newTab];
+            if (cached && cached.isLoaded) {
+                // ĐỒNG BỘ: Cập nhật state bài viết ngay trong batch này -> hiển thị ngay bài viết mới, không nháy bài viết cũ
+                setPosts(cached.posts || []);
+                setPage(cached.page || 1);
+                setHasMore(cached.hasMore ?? true);
+                setIsLoading(false);
+                setIsLoadingMore(false);
+                setError(null);
+
+                handleRestoreScroll?.(cached.scrollTop ?? 0);
+            } else {
+                // Tab chưa từng nạp dữ liệu -> xóa list, bật skeleton và gọi API lần đầu
+                setPosts([]);
+                setPage(1);
+                setHasMore(true);
+                setIsLoading(true);
+                setIsLoadingMore(false);
+                setError(null);
+
+                handleRestoreScroll?.(0);
+                fetchFeed(newTab, 1, true);
+            }
         },
-        [activeTab],
+        [handleRestoreScroll, fetchFeed],
     );
 
     // Hàm tải thêm khi cuộn đến cuối trang
     const handleLoadMore = useCallback(() => {
+        // Nếu đang trong quá trình chuyển tab và phục hồi cuộn -> không gọi API tải thêm
+        if (isTabSwitchingRef.current) return;
         if (!isLoading && !isLoadingMore && hasMore) {
             fetchFeed(activeTab, page + 1, false);
         }
     }, [activeTab, page, hasMore, isLoading, isLoadingMore, fetchFeed]);
 
-    // Hàm reload lại tab hiện tại
+    // Hàm reload lại tab hiện tại khi người dùng chủ động làm mới
     const reloadFeed = useCallback(() => {
+        if (tabsCacheRef.current[activeTab]) {
+            tabsCacheRef.current[activeTab].isLoaded = false;
+        }
         fetchFeed(activeTab, 1, true);
     }, [activeTab, fetchFeed]);
 
-    // Gắn Infinite Scroll hook
+    // Khi người dùng bấm lại vào icon Home trên thanh điều hướng lúc đang ở trang Home (Re-tap to top & refresh)
+    useEffect(() => {
+        const handleHomeReTap = () => {
+            scrollToTop();
+            setTimeout(() => {
+                reloadFeed();
+            }, 300);
+        };
+
+        window.addEventListener("home:re-tap", handleHomeReTap);
+        return () => window.removeEventListener("home:re-tap", handleHomeReTap);
+    }, [scrollToTop, reloadFeed]);
+
+    // Gắn Infinite Scroll hook (tự động ngắt khi đang chuyển tab)
     const { lastElementRef } = useInfiniteScroll({
         onLoadMore: handleLoadMore,
         hasMore,
         isLoading: isLoading || isLoadingMore,
+        isLockedRef: isTabSwitchingRef,
         rootMargin: "250px",
     });
 

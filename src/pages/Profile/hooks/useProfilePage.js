@@ -15,6 +15,72 @@ import { logout } from "@/features/authSlice";
 import userCache from "@/utils/userCache";
 import { toast } from "@/components/ui/toast";
 
+// =========================================================================
+// Module-level Cache cho Trang Cá nhân (Profile):
+// Bảo toàn tab đang mở, danh sách bài viết (threads, reposts), gợi ý và vị trí cuộn
+// khi chuyển đổi giữa các trang (Profile <-> Home <-> Search <-> Activity <-> PostDetail)
+// =========================================================================
+const globalProfileCache = new Map();
+
+const updateCachedPostList = (list, detail) => {
+    if (!Array.isArray(list)) return list;
+    const targetIdStr = String(detail.postId);
+    return list.map((p) => {
+        const isMatch = String(p.id) === targetIdStr;
+        const isOrigMatch = p.original_post && String(p.original_post.id) === targetIdStr;
+        const isOrigIdMatch = p.original_post_id && String(p.original_post_id) === targetIdStr;
+        if (!isMatch && !isOrigMatch && !isOrigIdMatch) {
+            return p;
+        }
+        let updatedP = isMatch ? { ...p, ...detail } : { ...p };
+        if (isOrigMatch) {
+            const updatedOriginal = { ...p.original_post, ...detail };
+            updatedP = {
+                ...updatedP,
+                original_post: updatedOriginal,
+                ...(updatedOriginal.is_liked !== undefined && {
+                    is_liked: updatedOriginal.is_liked,
+                    is_liked_by_auth: updatedOriginal.is_liked_by_auth,
+                    likes_count: updatedOriginal.likes_count,
+                }),
+                ...(updatedOriginal.is_reposted !== undefined && {
+                    is_reposted: updatedOriginal.is_reposted,
+                    is_reposted_by_auth: updatedOriginal.is_reposted_by_auth,
+                    reposts_count: updatedOriginal.reposts_count,
+                    reposts_and_quotes_count: updatedOriginal.reposts_and_quotes_count,
+                }),
+            };
+        }
+        if (isOrigIdMatch && !isOrigMatch) {
+            updatedP = { ...updatedP, ...detail };
+        }
+        return updatedP;
+    });
+};
+
+if (typeof window !== "undefined") {
+    // Xóa cache profile khi đăng xuất hoặc chuyển đổi tài khoản
+    window.addEventListener("user:session_changed", () => {
+        globalProfileCache.clear();
+    });
+
+    // Đồng bộ tương tác (Like, Repost) vào toàn bộ cache profile của tất cả user ở module level
+    window.addEventListener("post:interaction_updated", (e) => {
+        const detail = e.detail;
+        if (!detail?.postId) return;
+        globalProfileCache.forEach((profileData) => {
+            ["threads", "reposts"].forEach((tabKey) => {
+                if (profileData[tabKey]?.posts) {
+                    profileData[tabKey].posts = updateCachedPostList(profileData[tabKey].posts, detail);
+                }
+                if (profileData[tabKey]?.allSourcePosts) {
+                    profileData[tabKey].allSourcePosts = updateCachedPostList(profileData[tabKey].allSourcePosts, detail);
+                }
+            });
+        });
+    });
+}
+
 /**
  * useProfilePage
  * Custom hook quản lý toàn bộ logic cho trang Profile:
@@ -47,7 +113,7 @@ export const useProfilePage = () => {
         );
 
     // ==========================================
-    // State & Refs: Hồ sơ, Thống kê, Danh sách bài viết & Modals
+    // State & Refs: Hồ sơ, Thống kê & Người dùng
     // ==========================================
     // State lưu thông tin hồ sơ của tài khoản khác (khi xem profile người khác !isOwner)
     // Khởi tạo ưu tiên từ navigation state (route transition) hoặc userCache để giao diện hiển thị tức thì (0ms)
@@ -117,12 +183,35 @@ export const useProfilePage = () => {
 
     // Kích thước trang phân trang tải bài viết
     const PAGE_SIZE = 10;
-    // Tab đang được chọn: "threads" (Bài viết), "reposts" (Bài đăng lại), hoặc "suggestions" (Gợi ý theo dõi)
-    const [activeTab, setActiveTab] = useState("threads");
+
+    // ==========================================
+    // State & Refs: Khởi tạo từ Module-level Cache
+    // ==========================================
+    const profileCacheKey = isOwner ? "me" : (cleanUsername || "").toLowerCase();
+    if (!globalProfileCache.has(profileCacheKey)) {
+        globalProfileCache.set(profileCacheKey, {
+            activeTab: "threads",
+            threads: { allSourcePosts: null, posts: [], isLoaded: false, scrollTop: 0 },
+            reposts: { allSourcePosts: null, posts: [], isLoaded: false, scrollTop: 0 },
+            suggestions: { scrollTop: 0 },
+        });
+    }
+    const cachedProfileData = globalProfileCache.get(profileCacheKey);
+
+    // Tab đang được chọn: ưu tiên lấy từ Module Cache
+    const [activeTab, setActiveTab] = useState(() => cachedProfileData.activeTab || "threads");
+    const currentCachedTab = cachedProfileData[cachedProfileData.activeTab || "threads"];
+
     // State danh sách bài viết đang hiển thị trên giao diện theo từng chunk
-    const [posts, setPosts] = useState([]);
-    // Cờ loading khi tải bài viết lần đầu của tab (hiển thị skeleton)
-    const [isLoadingPosts, setIsLoadingPosts] = useState(true);
+    const [posts, setPosts] = useState(() => currentCachedTab?.posts || []);
+    // State lưu toàn bộ danh sách bài viết nguồn của tab hiện tại để phục vụ phân trang cắt lát (slice)
+    const [allSourcePosts, setAllSourcePosts] = useState(() => currentCachedTab?.allSourcePosts || []);
+
+    // Cờ loading khi tải bài viết lần đầu của tab (nếu đã nạp trong cache thì không hiển thị skeleton)
+    const [isLoadingPosts, setIsLoadingPosts] = useState(() => {
+        if (isOwner && (cachedProfileData.activeTab || "threads") === "suggestions") return false;
+        return !currentCachedTab?.isLoaded;
+    });
     // Cờ loading khi cuộn xuống đáy tải thêm bài viết (Infinite Scroll)
     const [isLoadingMore, setIsLoadingMore] = useState(false);
     // State lưu thông báo lỗi khi tải bài viết thất bại
@@ -130,8 +219,31 @@ export const useProfilePage = () => {
     // Khóa số nguyên kích hoạt tải lại toàn bộ dữ liệu khi người dùng bấm thử lại
     const [reloadKey, setReloadKey] = useState(0);
 
-    // State lưu toàn bộ danh sách bài viết nguồn của tab hiện tại để phục vụ phân trang cắt lát (slice)
-    const [allSourcePosts, setAllSourcePosts] = useState([]);
+    // Bộ nhớ đệm (Cache) cho các tab trong trang cá nhân trỏ trực tiếp tới Module Cache
+    const profileTabsCacheRef = useRef(cachedProfileData);
+    const currentTabRef = useRef(activeTab);
+    useEffect(() => {
+        currentTabRef.current = activeTab;
+    }, [activeTab]);
+
+    // Lắng nghe sự kiện tương tác toàn cục để đồng bộ state danh sách bài viết trên trang cá nhân
+    useEffect(() => {
+        const handleInteractionUpdated = (e) => {
+            const detail = e.detail;
+            if (!detail?.postId) return;
+            setPosts((prev) => updateCachedPostList(prev, detail));
+            setAllSourcePosts((prev) => updateCachedPostList(prev, detail));
+        };
+        window.addEventListener("post:interaction_updated", handleInteractionUpdated);
+        return () => {
+            window.removeEventListener("post:interaction_updated", handleInteractionUpdated);
+        };
+    }, []);
+
+    const isTabSwitchingRef = useRef(false);
+    const isRestoringScrollRef = useRef(false);
+    const isUnmountedRef = useRef(false);
+    const tabSwitchTimerRef = useRef(null);
 
     // Cờ quản lý trạng thái hiển thị của Modal Chỉnh sửa hồ sơ cá nhân
     const [isEditProfileModalOpen, setIsEditProfileModalOpen] = useState(false);
@@ -368,6 +480,15 @@ export const useProfilePage = () => {
             newlyCreatedPostsRef.current = newlyCreatedPostsRef.current.filter(filterFn);
             setAllSourcePosts((prev) => prev.filter(filterFn));
             setPosts((prev) => prev.filter(filterFn));
+
+            // Đồng bộ loại bỏ bài viết trong tất cả các tab đã cache
+            Object.keys(profileTabsCacheRef.current).forEach((key) => {
+                const tabData = profileTabsCacheRef.current[key];
+                if (tabData?.isLoaded) {
+                    tabData.allSourcePosts = (tabData.allSourcePosts || []).filter(filterFn);
+                    tabData.posts = (tabData.posts || []).filter(filterFn);
+                }
+            });
         },
         onEditSuccess: (updatedPost) => {
             if (!updatedPost?.id) return;
@@ -378,6 +499,22 @@ export const useProfilePage = () => {
             setAllSourcePosts((prev) =>
                 prev.map((p) => (String(p.id) === updatedIdStr ? { ...p, ...updatedPost } : p))
             );
+            setPosts((prev) =>
+                prev.map((p) => (String(p.id) === updatedIdStr ? { ...p, ...updatedPost } : p))
+            );
+
+            // Đồng bộ cập nhật bài viết trong tất cả các tab đã cache
+            Object.keys(profileTabsCacheRef.current).forEach((key) => {
+                const tabData = profileTabsCacheRef.current[key];
+                if (tabData?.isLoaded) {
+                    tabData.allSourcePosts = (tabData.allSourcePosts || []).map((p) =>
+                        String(p.id) === updatedIdStr ? { ...p, ...updatedPost } : p
+                    );
+                    tabData.posts = (tabData.posts || []).map((p) =>
+                        String(p.id) === updatedIdStr ? { ...p, ...updatedPost } : p
+                    );
+                }
+            });
         },
         onRepostSuccess: ({ postId, isReposted, target, isError }) => {
             if (isError) {
@@ -398,6 +535,13 @@ export const useProfilePage = () => {
                 };
                 setAllSourcePosts((prev) => prev.filter(filterFn));
                 setPosts((prevPosts) => prevPosts.filter(filterFn));
+
+                if (profileTabsCacheRef.current.reposts?.isLoaded) {
+                    profileTabsCacheRef.current.reposts.allSourcePosts =
+                        (profileTabsCacheRef.current.reposts.allSourcePosts || []).filter(filterFn);
+                    profileTabsCacheRef.current.reposts.posts =
+                        (profileTabsCacheRef.current.reposts.posts || []).filter(filterFn);
+                }
             }
         },
     });
@@ -418,6 +562,15 @@ export const useProfilePage = () => {
             newlyCreatedPostsRef.current = newlyCreatedPostsRef.current.filter(filterFn);
             setPosts((prev) => prev.filter(filterFn));
             setAllSourcePosts((prev) => prev.filter(filterFn));
+
+            // Đồng bộ loại bỏ bài viết trong tất cả các tab đã cache
+            Object.keys(profileTabsCacheRef.current).forEach((key) => {
+                const tabData = profileTabsCacheRef.current[key];
+                if (tabData?.isLoaded) {
+                    tabData.allSourcePosts = (tabData.allSourcePosts || []).filter(filterFn);
+                    tabData.posts = (tabData.posts || []).filter(filterFn);
+                }
+            });
         };
 
         window.addEventListener("post:deleted", handleGlobalPostDeleted);
@@ -428,6 +581,8 @@ export const useProfilePage = () => {
     const hasMore = posts.length < allSourcePosts.length;
 
     const handleLoadMore = useCallback(() => {
+        // Tạm khóa Infinite Scroll khi đang trong quá trình chuyển tab
+        if (isTabSwitchingRef.current) return;
         if (isLoadingPosts || isLoadingMore) return;
         if (posts.length >= allSourcePosts.length) return;
 
@@ -435,28 +590,403 @@ export const useProfilePage = () => {
         setTimeout(() => {
             setPosts((prevPosts) => {
                 const currentCount = prevPosts.length;
-                return allSourcePosts.slice(0, currentCount + PAGE_SIZE);
+                const nextPosts = allSourcePosts.slice(0, currentCount + PAGE_SIZE);
+                if (profileTabsCacheRef.current[activeTab]) {
+                    profileTabsCacheRef.current[activeTab].posts = nextPosts;
+                }
+                return nextPosts;
             });
             setIsLoadingMore(false);
         }, 300);
-    }, [isLoadingPosts, isLoadingMore, posts.length, allSourcePosts]);
+    }, [isLoadingPosts, isLoadingMore, posts.length, allSourcePosts, activeTab]);
 
     const { lastElementRef } = useInfiniteScroll({
         onLoadMore: handleLoadMore,
         hasMore,
         isLoading: isLoadingPosts || isLoadingMore,
+        isLockedRef: isTabSwitchingRef,
         rootMargin: "250px",
     });
 
     // Đồng bộ cuộn 2 chiều mượt mà giữa container và trang ngoài
     const cardRef = useRef(null);
     const contentRef = useRef(null);
-    const { spacerHeight, handleCardScroll } = useWindowScrollSync({
+    const spacerRef = useRef(null);
+    const { spacerHeight, handleCardScroll, restoreScroll } = useWindowScrollSync({
         cardRef,
         contentRef,
+        spacerRef,
         deps: [posts.length, isLoadingPosts, isLoadingMore, activeTab],
-        resetTrigger: activeTab,
     });
+
+    // Quản lý cờ unmount để chặn mọi sự kiện cuộn rơi vào 0 khi component bị unmount khỏi DOM
+    useEffect(() => {
+        isUnmountedRef.current = false;
+        isRestoringScrollRef.current = false;
+        return () => {
+            isUnmountedRef.current = true;
+        };
+    }, []);
+
+    // Lắng nghe cuộn liên tục trên cardRef để lưu vị trí cuộn thực tế theo thời gian thực (chống mất vị trí khi click đổi tab nhanh)
+    useEffect(() => {
+        const cardEl = cardRef?.current;
+        if (!cardEl) return;
+
+        const onScroll = () => {
+            if (isUnmountedRef.current || isRestoringScrollRef.current) return;
+            // Bỏ qua nếu khung card đang bị thu hẹp hoặc không có nội dung cuộn (unmounting / skeleton)
+            if (cardEl.scrollHeight <= cardEl.clientHeight + 10) return;
+
+            const top = cardEl.scrollTop;
+            if (profileTabsCacheRef.current[currentTabRef.current]) {
+                profileTabsCacheRef.current[currentTabRef.current].scrollTop = top;
+            }
+        };
+
+        cardEl.addEventListener("scroll", onScroll, { passive: true });
+        return () => {
+            cardEl.removeEventListener("scroll", onScroll);
+        };
+    }, [cardRef]);
+
+    // Tải danh sách bài viết theo tab (threads hoặc reposts)
+    const fetchPostsForTab = useCallback(
+        async (tabKey) => {
+            if (isOwner && tabKey === "suggestions") {
+                setIsLoadingPosts(false);
+                return;
+            }
+
+            const effectiveTab = !isOwner && tabKey === "suggestions" ? "threads" : tabKey;
+
+            if (currentTabRef.current === effectiveTab) {
+                setIsLoadingPosts(true);
+                setPostsError(null);
+            }
+
+            try {
+                if (effectiveTab === "reposts") {
+                    const targetId = isOwner ? currentUser?.id : otherUser?.id;
+                    if (!targetId) {
+                        if (currentTabRef.current === "reposts") {
+                            setAllSourcePosts([]);
+                            setPosts([]);
+                            setIsLoadingPosts(false);
+                        }
+                        return;
+                    }
+
+                    const res = await userService.getUserReposts(targetId, { per_page: 20 });
+                    if (currentTabRef.current !== effectiveTab) return;
+                    const repostsList = (res?.data || [])
+                        .filter(
+                            (p) =>
+                                !deletedPostIdsRef.current.has(String(p.id)) &&
+                                !deletedPostIdsRef.current.has(String(p.original_post_id)) &&
+                                !deletedPostIdsRef.current.has(String(p.original_post?.id)) &&
+                                !userCache.isPostDeleted(p.id) &&
+                                !userCache.isPostDeleted(p.original_post_id) &&
+                                !userCache.isPostDeleted(p.original_post?.id) &&
+                                Boolean(p.original_post?.id || p.content),
+                        )
+                        .map((p) => userCache.enrichPost(p));
+                    const initialPosts = repostsList.slice(0, PAGE_SIZE);
+                    profileTabsCacheRef.current.reposts = {
+                        allSourcePosts: repostsList,
+                        posts: initialPosts,
+                        isLoaded: true,
+                        scrollTop: profileTabsCacheRef.current.reposts?.scrollTop ?? 0,
+                    };
+                    if (currentTabRef.current === "reposts") {
+                        setAllSourcePosts(repostsList);
+                        setPosts(initialPosts);
+                        setIsLoadingPosts(false);
+                        setPostsError(null);
+                    }
+                } else if (effectiveTab === "threads") {
+                    // Nạp feed for_you và following với kích thước trang tối ưu (per_page: 200)
+                    const feedPromises = [
+                        postService.getFeed({ type: "for_you", page: 1, per_page: 200 }),
+                    ];
+                    if (currentUser?.id) {
+                        feedPromises.push(
+                            postService.getFeed({ type: "following", page: 1, per_page: 50 })
+                        );
+                    }
+
+                    // Nếu chưa quét sâu toàn bộ hệ thống hoặc chưa có bài viết của user này trong cache:
+                    // Quét song song trang 2 của feed for_you (với per_page: 200) để bao phủ toàn bộ 354 bài viết trong hệ thống
+                    if (
+                        !userCache.isDeepScanned() ||
+                        (cleanUsername && userCache.getPostsByUsername(cleanUsername).length === 0)
+                    ) {
+                        feedPromises.push(
+                            postService
+                                .getFeed({ type: "for_you", page: 2, per_page: 200 })
+                                .catch(() => null)
+                        );
+                    }
+
+                    const feedResults = await Promise.allSettled(feedPromises);
+                    if (currentTabRef.current !== effectiveTab) return;
+
+                    const feedPosts = [];
+                    feedResults.forEach((r) => {
+                        if (r.status === "fulfilled" && r.value) {
+                            const list = r.value?.data || [];
+                            if (Array.isArray(list)) {
+                                feedPosts.push(...list);
+                            }
+                        }
+                    });
+
+                    // Lưu toàn bộ bài viết mới tải vào cache để bảo toàn cho các trang cá nhân tiếp theo
+                    userCache.savePosts(feedPosts);
+                    userCache.setDeepScanned(true);
+
+                    // Lấy thêm các bài viết đã cache của user này (nếu có từ trước)
+                    const cachedPosts = cleanUsername
+                        ? userCache.getPostsByUsername(cleanUsername)
+                        : [];
+
+                    const combined = [...cachedPosts, ...feedPosts];
+
+                    // Loại bỏ bài viết trùng lặp theo ID
+                    const uniquePostMap = new Map();
+                    combined.forEach((p) => {
+                        if (p?.id && !uniquePostMap.has(String(p.id))) {
+                            uniquePostMap.set(String(p.id), p);
+                        }
+                    });
+                    const allPosts = Array.from(uniquePostMap.values()).map((p) => userCache.enrichPost(p));
+
+                    if (isOwner) {
+                        const userPosts = allPosts
+                            .filter(
+                                (p) =>
+                                    p.user?.id === currentUser?.id ||
+                                    p.author?.id === currentUser?.id,
+                            )
+                            .filter(
+                                (p) =>
+                                    !deletedPostIdsRef.current.has(String(p.id)) &&
+                                    !userCache.isPostDeleted(p.id),
+                            )
+                            .sort((a, b) => {
+                                const timeA = a.created_at ? new Date(a.created_at).getTime() : 0;
+                                const timeB = b.created_at ? new Date(b.created_at).getTime() : 0;
+                                if (timeB !== timeA) return timeB - timeA;
+                                return (b.id || 0) - (a.id || 0);
+                            });
+
+                        const existingIds = new Set(userPosts.map((p) => String(p.id)));
+                        const pendingNewPosts = newlyCreatedPostsRef.current
+                            .filter(
+                                (p) =>
+                                    !deletedPostIdsRef.current.has(String(p.id)) &&
+                                    !userCache.isPostDeleted(p.id),
+                            )
+                            .filter((p) => !existingIds.has(String(p.id)));
+                        const finalPosts = [...pendingNewPosts, ...userPosts];
+                        const initialPosts = finalPosts.slice(0, PAGE_SIZE);
+                        profileTabsCacheRef.current.threads = {
+                            allSourcePosts: finalPosts,
+                            posts: initialPosts,
+                            isLoaded: true,
+                            scrollTop: profileTabsCacheRef.current.threads?.scrollTop ?? 0,
+                        };
+                        if (currentTabRef.current === "threads") {
+                            setAllSourcePosts(finalPosts);
+                            setPosts(initialPosts);
+                            setIsLoadingPosts(false);
+                            setPostsError(null);
+                        }
+                    } else if (cleanUsername) {
+                        const targetUsernameLower = cleanUsername.toLowerCase();
+                        const userPosts = allPosts
+                            .filter((p) => {
+                                const postUsername = (p.user?.username || p.author?.username || "")
+                                    .replace(/^@/, "")
+                                    .toLowerCase();
+                                return postUsername === targetUsernameLower;
+                            })
+                            .filter(
+                                (p) =>
+                                    !deletedPostIdsRef.current.has(String(p.id)) &&
+                                    !userCache.isPostDeleted(p.id),
+                            )
+                            .sort((a, b) => {
+                                const timeA = a.created_at ? new Date(a.created_at).getTime() : 0;
+                                const timeB = b.created_at ? new Date(b.created_at).getTime() : 0;
+                                if (timeB !== timeA) return timeB - timeA;
+                                return (b.id || 0) - (a.id || 0);
+                            });
+
+                        // Nếu tìm thấy bài viết của user, cập nhật thông tin tác giả và bảo toàn avatar
+                        if (userPosts.length > 0) {
+                            const matchedPost = userPosts[0];
+                            const author =
+                                (matchedPost.user?.username || "").replace(/^@/, "").toLowerCase() === targetUsernameLower
+                                ? matchedPost.user
+                                : matchedPost.author;
+                            if (author) {
+                                setOtherUser((prev) => {
+                                    const merged = { ...prev, ...author };
+                                    merged.avatar_url =
+                                        author.avatar_url ||
+                                        prev?.avatar_url ||
+                                        userCache.getByUsername(cleanUsername)?.avatar_url ||
+                                        null;
+                                    userCache.saveUser(merged);
+                                    return merged;
+                                });
+                                if (author.is_following !== undefined) {
+                                    setIsFollowing(Boolean(author.is_following));
+                                }
+                                if (author.followers_count !== undefined) {
+                                    setFollowersCount(author.followers_count);
+                                }
+                                if (author.following_count !== undefined) {
+                                    setFollowingCount(author.following_count);
+                                }
+                            }
+                        }
+
+                        const initialPosts = userPosts.slice(0, PAGE_SIZE);
+                        profileTabsCacheRef.current.threads = {
+                            allSourcePosts: userPosts,
+                            posts: initialPosts,
+                            isLoaded: true,
+                            scrollTop: profileTabsCacheRef.current.threads?.scrollTop ?? 0,
+                        };
+                        if (currentTabRef.current === "threads") {
+                            setAllSourcePosts(userPosts);
+                            setPosts(initialPosts);
+                            setIsLoadingPosts(false);
+                            setPostsError(null);
+                        }
+                    }
+                }
+            } catch {
+                if (currentTabRef.current === effectiveTab) {
+                    setPostsError("Không thể tải bài viết, vui lòng thử lại sau.");
+                    setAllSourcePosts([]);
+                    setPosts([]);
+                    setIsLoadingPosts(false);
+                }
+            }
+        },
+        [isOwner, currentUser, otherUser, cleanUsername],
+    );
+
+    // Xử lý chuyển tab: ĐỒNG BỘ CẢ ACTIVE TAB VÀ NỘI DUNG (BATCH RENDER) -> LOẠI BỎ HOÀN TOÀN HIỆN TƯỢNG NHÁY NỘI DUNG TAB CŨ
+    const handleTabChange = useCallback(
+        (newTab) => {
+            if (newTab === currentTabRef.current) return;
+
+            // Khóa tạm Infinite Scroll và bộ ghi nhận cuộn trong 400ms để ổn định vị trí mới
+            isTabSwitchingRef.current = true;
+            isRestoringScrollRef.current = true;
+            if (tabSwitchTimerRef.current) clearTimeout(tabSwitchTimerRef.current);
+            tabSwitchTimerRef.current = setTimeout(() => {
+                isTabSwitchingRef.current = false;
+                isRestoringScrollRef.current = false;
+            }, 400);
+
+            currentTabRef.current = newTab;
+            profileTabsCacheRef.current.activeTab = newTab;
+            setActiveTab(newTab);
+
+            if (newTab === "suggestions") {
+                setIsLoadingPosts(false);
+                const targetScroll = profileTabsCacheRef.current.suggestions?.scrollTop ?? 0;
+                restoreScroll(targetScroll);
+                return;
+            }
+
+            const cached = profileTabsCacheRef.current[newTab];
+            if (cached && cached.isLoaded) {
+                // ĐỒNG BỘ: Cập nhật state bài viết ngay trong batch này -> hiển thị ngay bài viết mới, không nháy bài viết cũ
+                setAllSourcePosts(cached.allSourcePosts || []);
+                setPosts(cached.posts || []);
+                setIsLoadingPosts(false);
+                setPostsError(null);
+
+                const targetScroll = cached.scrollTop ?? 0;
+                restoreScroll(targetScroll);
+            } else {
+                // Tab chưa từng nạp dữ liệu -> xóa list, bật skeleton và gọi API lần đầu
+                setAllSourcePosts([]);
+                setPosts([]);
+                setIsLoadingPosts(true);
+                setPostsError(null);
+
+                restoreScroll(0);
+                fetchPostsForTab(newTab);
+            }
+        },
+        [restoreScroll, fetchPostsForTab],
+    );
+
+    // Tải dữ liệu ban đầu cho tab khởi tạo khi mở trang cá nhân (hoặc khôi phục từ Module Cache khi quay lại trang)
+    const hasInitializedRef = useRef(false);
+    useEffect(() => {
+        if (!hasInitializedRef.current) {
+            hasInitializedRef.current = true;
+            if (activeTab === "suggestions") {
+                if (isOwner) {
+                    const targetScroll = profileTabsCacheRef.current.suggestions?.scrollTop ?? 0;
+                    restoreScroll(targetScroll);
+                } else {
+                    // eslint-disable-next-line react-hooks/set-state-in-effect
+                    fetchPostsForTab("threads");
+                }
+                return;
+            }
+
+            const cached = profileTabsCacheRef.current[activeTab];
+            if (cached && cached.isLoaded) {
+                // Đã có cache trong module (quay lại từ Home, Search, Activity, PostDetail...) -> khôi phục lại vị trí cuộn 0ms
+                isRestoringScrollRef.current = true;
+                const targetScroll = cached.scrollTop ?? 0;
+                restoreScroll(targetScroll);
+                const timer = setTimeout(() => {
+                    isRestoringScrollRef.current = false;
+                }, 400);
+                return () => clearTimeout(timer);
+            } else {
+                fetchPostsForTab(activeTab);
+            }
+        }
+    }, [activeTab, isOwner, fetchPostsForTab, restoreScroll]);
+
+    // Khi người dùng bấm lại vào icon Profile trên thanh điều hướng lúc đang ở Profile (cuộn mượt lên đỉnh)
+    useEffect(() => {
+        const handleProfileReTap = () => {
+            if (cardRef?.current) {
+                cardRef.current.scrollTo({ top: 0, behavior: "smooth" });
+            }
+            if (typeof window !== "undefined") {
+                window.scrollTo({ top: 0, behavior: "smooth" });
+            }
+        };
+
+        window.addEventListener("profile:re-tap", handleProfileReTap);
+        return () => window.removeEventListener("profile:re-tap", handleProfileReTap);
+    }, [cardRef]);
+
+    // Khi otherUser?.id tải xong muộn hơn, nếu tab hiện tại là reposts và chưa có dữ liệu -> nạp reposts
+    useEffect(() => {
+        if (
+            !isOwner &&
+            otherUser?.id &&
+            currentTabRef.current === "reposts" &&
+            !profileTabsCacheRef.current.reposts?.isLoaded
+        ) {
+            fetchPostsForTab("reposts");
+        }
+    }, [isOwner, otherUser?.id, fetchPostsForTab]);
 
     // Tải số lượng followers và following của tài khoản mục tiêu
     const targetUserId = isOwner ? currentUser?.id : otherUser?.id;
@@ -518,213 +1048,6 @@ export const useProfilePage = () => {
             isCancelled = true;
         };
     }, [targetUserId, isOwner, currentUser, reloadKey]);
-
-    // Tải danh sách bài viết theo tab (threads hoặc reposts)
-    useEffect(() => {
-        let isCancelled = false;
-
-        const fetchPosts = async () => {
-            if (isOwner && activeTab === "suggestions") {
-                setIsLoadingPosts(false);
-                setAllSourcePosts([]);
-                setPosts([]);
-                return;
-            }
-
-            if (!isOwner && activeTab === "suggestions") {
-                setActiveTab("threads");
-                return;
-            }
-
-            setIsLoadingPosts(true);
-            setPostsError(null);
-
-            try {
-                if (activeTab === "reposts") {
-                    const targetId = isOwner ? currentUser?.id : otherUser?.id;
-                    if (!targetId) {
-                        if (!isCancelled) {
-                            setAllSourcePosts([]);
-                            setPosts([]);
-                            setIsLoadingPosts(false);
-                        }
-                        return;
-                    }
-
-                    const res = await userService.getUserReposts(targetId, { per_page: 20 });
-                    if (isCancelled) return;
-                    const repostsList = (res?.data || []).filter(
-                        (p) =>
-                            !deletedPostIdsRef.current.has(String(p.id)) &&
-                            !deletedPostIdsRef.current.has(String(p.original_post_id)) &&
-                            !deletedPostIdsRef.current.has(String(p.original_post?.id)) &&
-                            !userCache.isPostDeleted(p.id) &&
-                            !userCache.isPostDeleted(p.original_post_id) &&
-                            !userCache.isPostDeleted(p.original_post?.id) &&
-                            Boolean(p.original_post?.id || p.content),
-                    );
-                    setAllSourcePosts(repostsList);
-                    setPosts(repostsList.slice(0, PAGE_SIZE));
-                } else if (activeTab === "threads") {
-                    // Nạp feed for_you và following với kích thước trang tối ưu (per_page: 200)
-                    const feedPromises = [
-                        postService.getFeed({ type: "for_you", page: 1, per_page: 200 }),
-                    ];
-                    if (currentUser?.id) {
-                        feedPromises.push(
-                            postService.getFeed({ type: "following", page: 1, per_page: 50 })
-                        );
-                    }
-
-                    // Nếu chưa quét sâu toàn bộ hệ thống hoặc chưa có bài viết của user này trong cache:
-                    // Quét song song trang 2 của feed for_you (với per_page: 200) để bao phủ toàn bộ 354 bài viết trong hệ thống
-                    if (
-                        !userCache.isDeepScanned() ||
-                        (cleanUsername && userCache.getPostsByUsername(cleanUsername).length === 0)
-                    ) {
-                        feedPromises.push(
-                            postService
-                                .getFeed({ type: "for_you", page: 2, per_page: 200 })
-                                .catch(() => null)
-                        );
-                    }
-
-                    const feedResults = await Promise.allSettled(feedPromises);
-                    if (isCancelled) return;
-
-                    const feedPosts = [];
-                    feedResults.forEach((r) => {
-                        if (r.status === "fulfilled" && r.value) {
-                            const list = r.value?.data || [];
-                            if (Array.isArray(list)) {
-                                feedPosts.push(...list);
-                            }
-                        }
-                    });
-
-                    // Lưu toàn bộ bài viết mới tải vào cache để bảo toàn cho các trang cá nhân tiếp theo
-                    userCache.savePosts(feedPosts);
-                    userCache.setDeepScanned(true);
-
-                    // Lấy thêm các bài viết đã cache của user này (nếu có từ trước)
-                    const cachedPosts = cleanUsername
-                        ? userCache.getPostsByUsername(cleanUsername)
-                        : [];
-
-                    const combined = [...cachedPosts, ...feedPosts];
-
-                    // Loại bỏ bài viết trùng lặp theo ID
-                    const uniquePostMap = new Map();
-                    combined.forEach((p) => {
-                        if (p?.id && !uniquePostMap.has(String(p.id))) {
-                            uniquePostMap.set(String(p.id), p);
-                        }
-                    });
-                    const allPosts = Array.from(uniquePostMap.values());
-
-                    if (isOwner) {
-                        const userPosts = allPosts
-                            .filter(
-                                (p) =>
-                                    p.user?.id === currentUser?.id ||
-                                    p.author?.id === currentUser?.id,
-                            )
-                            .filter(
-                                (p) =>
-                                    !deletedPostIdsRef.current.has(String(p.id)) &&
-                                    !userCache.isPostDeleted(p.id),
-                            )
-                            .sort((a, b) => {
-                                const timeA = a.created_at ? new Date(a.created_at).getTime() : 0;
-                                const timeB = b.created_at ? new Date(b.created_at).getTime() : 0;
-                                if (timeB !== timeA) return timeB - timeA;
-                                return (b.id || 0) - (a.id || 0);
-                            });
-
-                        const existingIds = new Set(userPosts.map((p) => String(p.id)));
-                        const pendingNewPosts = newlyCreatedPostsRef.current
-                            .filter(
-                                (p) =>
-                                    !deletedPostIdsRef.current.has(String(p.id)) &&
-                                    !userCache.isPostDeleted(p.id),
-                            )
-                            .filter((p) => !existingIds.has(String(p.id)));
-                        const finalPosts = [...pendingNewPosts, ...userPosts];
-                        setAllSourcePosts(finalPosts);
-                        setPosts(finalPosts.slice(0, PAGE_SIZE));
-                    } else if (cleanUsername) {
-                        const targetUsernameLower = cleanUsername.toLowerCase();
-                        const userPosts = allPosts
-                            .filter((p) => {
-                                const postUsername = (p.user?.username || p.author?.username || "")
-                                    .replace(/^@/, "")
-                                    .toLowerCase();
-                                return postUsername === targetUsernameLower;
-                            })
-                            .filter(
-                                (p) =>
-                                    !deletedPostIdsRef.current.has(String(p.id)) &&
-                                    !userCache.isPostDeleted(p.id),
-                            )
-                            .sort((a, b) => {
-                                const timeA = a.created_at ? new Date(a.created_at).getTime() : 0;
-                                const timeB = b.created_at ? new Date(b.created_at).getTime() : 0;
-                                if (timeB !== timeA) return timeB - timeA;
-                                return (b.id || 0) - (a.id || 0);
-                            });
-
-                        // Nếu tìm thấy bài viết của user, cập nhật thông tin tác giả và bảo toàn avatar
-                        if (userPosts.length > 0) {
-                            const matchedPost = userPosts[0];
-                            const author =
-                                (matchedPost.user?.username || "").replace(/^@/, "").toLowerCase() === targetUsernameLower
-                                    ? matchedPost.user
-                                    : matchedPost.author;
-                            if (author) {
-                                setOtherUser((prev) => {
-                                    const merged = { ...prev, ...author };
-                                    merged.avatar_url =
-                                        author.avatar_url ||
-                                        prev?.avatar_url ||
-                                        userCache.getByUsername(cleanUsername)?.avatar_url ||
-                                        null;
-                                    userCache.saveUser(merged);
-                                    return merged;
-                                });
-                                if (author.is_following !== undefined) {
-                                    setIsFollowing(Boolean(author.is_following));
-                                }
-                                if (author.followers_count !== undefined) {
-                                    setFollowersCount(author.followers_count);
-                                }
-                                if (author.following_count !== undefined) {
-                                    setFollowingCount(author.following_count);
-                                }
-                            }
-                        }
-
-                        setAllSourcePosts(userPosts);
-                        setPosts(userPosts.slice(0, PAGE_SIZE));
-                    }
-                }
-            } catch {
-                if (isCancelled) return;
-                setPostsError("Không thể tải bài viết, vui lòng thử lại sau.");
-                setAllSourcePosts([]);
-                setPosts([]);
-            } finally {
-                if (!isCancelled) {
-                    setIsLoadingPosts(false);
-                }
-            }
-        };
-
-        fetchPosts();
-
-        return () => {
-            isCancelled = true;
-        };
-    }, [isOwner, currentUser?.id, otherUser?.id, cleanUsername, activeTab, reloadKey]);
 
     // Lắng nghe sự kiện theo dõi toàn cục từ bất kỳ trang nào khác (Activity, Feed, Search...)
     useEffect(() => {
@@ -956,9 +1279,22 @@ export const useProfilePage = () => {
         [navigate, t],
     );
 
-    const handleReloadPosts = () => {
+    const handleReloadPosts = useCallback(() => {
+        globalProfileCache.delete(profileCacheKey);
+        profileTabsCacheRef.current = {
+            threads: { allSourcePosts: null, posts: [], isLoaded: false, scrollTop: 0 },
+            reposts: { allSourcePosts: null, posts: [], isLoaded: false, scrollTop: 0 },
+            suggestions: { scrollTop: 0 },
+        };
+        globalProfileCache.set(profileCacheKey, profileTabsCacheRef.current);
         setReloadKey((prev) => prev + 1);
-    };
+        if (currentTabRef.current !== "suggestions") {
+            setIsLoadingPosts(true);
+            setPosts([]);
+            setAllSourcePosts([]);
+            fetchPostsForTab(currentTabRef.current);
+        }
+    }, [fetchPostsForTab, profileCacheKey]);
 
     return {
         // User & Thống kê
@@ -976,7 +1312,7 @@ export const useProfilePage = () => {
 
         // Tab & Bài viết & Infinite Scroll
         activeTab,
-        setActiveTab,
+        setActiveTab: handleTabChange,
         posts,
         isLoadingPosts,
         isLoadingMore,
@@ -989,6 +1325,7 @@ export const useProfilePage = () => {
         // Cuộn & Refs
         cardRef,
         contentRef,
+        spacerRef,
         spacerHeight,
         handleCardScroll,
 
